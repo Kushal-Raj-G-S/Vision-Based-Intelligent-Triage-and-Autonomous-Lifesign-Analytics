@@ -1,0 +1,37 @@
+# Ignore virtual environments
+**/.venv/
+**/env/
+**/venv/
+
+# Ignore Python cache and logs
+**/__pycache__/
+*.pyc
+*.log
+app_test.log
+app.log
+
+# Ignore user uploads (large video files)
+**/uploads/
+
+# OS generated files
+.DS_Store
+
+env/
+.env
+
+# Ignore downloaded validation datasets (100GB+ of real video data —
+# never belongs in git; see README's Validation section for where to
+# re-download each one, they're all free/public or free-account sources).
+# Keep the small evidence/derived files though: manifest.csv, the
+# validation run logs, and any reference scripts/docs that came with a
+# dataset — those are what actually need to survive, not the raw videos.
+test/dataset_1/
+test/dataset_2/
+test/ubfc_phys/
+test/rPPG-10/
+test/*.avi
+test/*.mp4
+test/*.mov
+test/*.npy
+test/*.zip
+!test/*.log

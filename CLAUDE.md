@@ -1,0 +1,94 @@
+# CLAUDE.md — VITAL project guide for coding agents
+
+This file orients a coding agent (or a future you) working in this repo. It
+is deliberately blunt about what's solid, what's fragile, and what's
+genuinely unresolved — this project was put through an honesty audit and
+several rounds of real-data validation; don't undo that by re-introducing
+claims the code doesn't back up.
+
+## What this project is
+
+VITAL (aka "Opti-Screen") is a college project: contactless vitals
+extraction via webcam rPPG, feeding a CrewAI 3-agent "triage" pipeline that
+classifies ESI acuity and Compensated Shock, displayed on a Next.js
+dashboard with a Flask API backend and Neon serverless Postgres. See
+[README.md](README.md) for the full architecture, feature list, and
+Validation section — read that before this file for context; this file is
+about how to work in the code, not what it does for a user.
+
+## The one rule that matters most here
+
+**The deterministic clinical engine (`core/clinical.py`) is the sole source
+of truth for ESI level, Compensated Shock flag, and priority score. The LLM
+agents (`agents/`) narrate and explain that output — they never compute or
+override it.** This was NOT always true; an earlier version let the
+Coordinator Agent freely generate these numbers as JSON, parsed with regex,
+falling back to a hardcoded `esi_level=3` on any parse failure. If you're
+touching `web/routes.py::triage_run_api`, `agents/crew.py`, or
+`agents/config/tasks.yaml`, preserve this separation. Don't let an LLM
+compute a number that drives real triage priority.
+
+## Where things actually live
+
+| Concern | File |
+| :--- | :--- |
+| rPPG DSP engine (CHROM/POS, adaptive filter, SQI, HRV) | `core/rppg.py` |
+| Camera/MediaPipe ROI extraction | `core/camera.py` |
+| Deterministic ESI/shock scoring | `core/clinical.py` |
+| Lightweight guideline/literature retrieval | `core/guidelines.py` |
+| CrewAI agents/tasks | `agents/crew.py`, `agents/config/*.yaml`, `agents/tools.py` |
+| Flask app, shared session state | `web/__init__.py` |
+| API routes | `web/routes.py` |
+| Neon Postgres access | `web/neon_db.py` |
+| Validation harness (synthetic + real-dataset) | `scripts/validate_dataset.py` |
+| Multi-dataset manifest builder (UBFC-rPPG + UBFC-Phys) | `scripts/build_manifest.py` |
+| DSP-core-only validation for face-incompatible datasets (rPPG-10) | `scripts/validate_cropped_roi.py` |
+| Next.js dashboard (single file, ~1700 lines) | `frontend/src/app/page.tsx` |
+
+## Known-good vs. known-fragile (read before touching)
+
+**Solid, tested, trust these:**
+- `core/clinical.py` — unit-tested against 8 hand-built clinical scenarios (normal, isolated tachycardia/tachypnea, borderline/severe shock, bradycardia, low-SQI, no-signal). Any Compensated Shock flag forces `needs_manual_review=True` unconditionally — don't remove that, it's a deliberate safety policy, not a confidence heuristic.
+- CHROM on synthetic signal: 0.29 BPM MAE / 0.53 RMSE across 50-140 bpm under 2% sensor noise (`python scripts/validate_dataset.py`).
+- The concurrency fix in `agents/crew.py` (`build_triage_crew()` factory, not a module-level singleton) — CrewAI `Task` objects store output on `self` and are not safe to re-enter from concurrent Flask threads.
+- `web/neon_db.py::get_all_patients()` now raises on a real DB failure instead of returning `[]` — do not revert this. It used to make a transient Neon cold-start connection hiccup indistinguishable from "the queue is genuinely empty," which looked exactly like data loss to an end user. Every caller must catch and surface the error, not swallow it.
+
+**Fragile / open, do not claim these are solved:**
+- **CHROM on real video: 17.4 BPM MAE / 24.1 RMSE across 56 real sessions (41 UBFC-rPPG + 15 UBFC-Phys), bimodal** — most sessions are good-to-excellent, but 8+ sessions show a harmonic-ambiguity failure: the peak-picker locks onto ~0.5× or ~2× the true rate for sustained multi-second stretches. Root-caused via `test/dataset_2/subject41`'s frame-by-frame trace (reproduces at the same ~0.478× ratio in every re-run). **Confirmed to generalize across three independent real datasets** — also reproduces in `scripts/validate_cropped_roi.py`'s rPPG-10 DSP-only test (24.5 BPM MAE, n=26; one subject lands at exactly 0.50×) — this is not a UBFC-rPPG-specific quirk. A debounced lock/candidate hysteresis mechanism was added (`AdvancedRPPG._resolve_bpm_lock`) — it works correctly (verified by trace) and doesn't regress the synthetic case, but it does **not** fix this failure mode, because the false lock is sustained and spectrally confident, not noise-driven flip-flopping. See README's Validation section for the full writeup. If you want to actually fix this, you're looking at harmonic-energy disambiguation (compare PSD power at the candidate vs. its 2× point) or a proper temporal model (HMM/Viterbi) — not more hysteresis tuning.
+- **Stratified-by-condition accuracy now exists** (UBFC-Phys labels rest/speech/arithmetic) — speech/talking is measurably worse (26.6 BPM MAE) than rest or arithmetic (~19.2 BPM each), consistent with the rPPG literature (mouth movement disrupts the pulsatile signal). This is a real, evidence-backed finding, not a design-goal claim — safe to cite as-is.
+- POS algorithm (`algorithm="POS"` in `AdvancedRPPG`) — present in `core/rppg.py`, has its own separate harmonic lock-on under sensor noise (26.71 BPM MAE at HR≲90bpm), and is **not wired into any API route or UI control** — every instantiation site hardcodes CHROM. Don't "fix" this by wiring POS into the app without re-validating it first.
+- Respiratory rate (`_estimate_rr`/`_smooth_rr` in `core/rppg.py`) — fixed a real bug (fake single-segment "Welch" averaging + zero temporal smoothing, causing RR to bounce across its entire 6-30 br/min search band), verified via synthetic signal to converge instead of edge-locking. **Never validated against real ground truth** — none of the three real datasets in `test/` provide a respiration-rate ground truth (UBFC-rPPG/UBFC-Phys/rPPG-10 all give HR-only or ECG/BVP), so there is still no real-data RR accuracy number.
+- Skin-tone stratified accuracy — still not computed. None of the three datasets currently in `test/` ship per-subject skin-tone metadata (rPPG-10 does have Fitzpatrick labels in its `Subject Data.xlsx`, but rPPG-10's videos can't run through the face-detection pipeline at all — see `scripts/validate_cropped_roi.py`'s docstring). The README's "Fitzpatrick Inclusivity" language is a design goal, not a validated result — keep it phrased that way.
+- Live camera is single-session by design (`web/__init__.py` holds one global `camera`/`rppg_engine`/`session`) — this matches "one workstation, one webcam," but means the "dynamic triage queue" is a sequential log of completed runs, not concurrent multi-patient live monitoring. Don't describe it as the latter.
+- Batch validation over long videos needs `process_stride` — `analyze_video_complete()` and `validate_cropped_roi.py`'s loop default to running the full DSP pipeline (Welch FFT + cubic-spline HRV) every single frame, which is fine for short clips but turned a 10-minute rPPG-10 video into 13+ minutes with zero results. Batch scripts pass `process_stride=2` or `3`; the live product path (`agents/tools.py` → `analyze_video_complete(video_path)`, no stride arg) is unaffected and still processes every frame, unchanged.
+
+## A note on trusting changes in this repo
+
+Mid-session, the BPM lock/candidate hysteresis fix above was implemented, and its *first* version silently regressed two previously-correct synthetic cases (introduced a same-value streak-counter design that was too fragile against ordinary FFT-bin jitter). It was caught immediately by re-running `scripts/validate_dataset.py` after the change, not by inspection. **The lesson: re-run the validation harness after any change to `core/rppg.py` or `core/clinical.py`, every time, before considering a change safe.** A change being reviewed and appearing reasonable is not the same as it being verified.
+
+```bash
+python scripts/validate_dataset.py                                          # synthetic self-test — run this after ANY core/rppg.py change
+python scripts/validate_dataset.py --manifest test/manifest.csv --skip-synthetic  # real 56-session set, if test/ dataset is present locally
+python scripts/validate_cropped_roi.py test/rPPG-10                        # DSP-only, separate — see README for why it's not comparable to the above
+```
+
+## Running the app
+
+See README.md's "Local Setup" section. Quick reference:
+
+```bash
+python app.py                    # Flask API, port 5002
+cd frontend && npm run dev       # Next.js dashboard, port 3000
+```
+
+`.env` needs `NVIDIA_API_KEY` and `DATABASE_URL` at minimum. Optional:
+`API_KEY` (gates `DELETE /api/triage_queue`, off by default) and
+`CORS_ORIGINS` (defaults to the local Next.js dev server only).
+
+## Style/process notes specific to this repo
+
+- The user has been building this iteratively with AI assistance and values direct, unhedged honesty over reassurance — when something doesn't work, say so plainly with the evidence, don't soften it.
+- Prefer running the real datasets in `test/` (56 real sessions across UBFC-rPPG + UBFC-Phys, plus 26 more via the separate rPPG-10 DSP-only path, all built via `scripts/build_manifest.py`) over synthetic-only claims whenever making an accuracy statement — synthetic validation only proves the DSP math, not real-world camera+face-detection accuracy.
+- When running multiple batch validation jobs, run them **sequentially, not concurrently** — two MediaPipe/OpenCV processes fighting for CPU at once was directly observed to make both crawl to a near-halt (a video that normally processes in ~1-2 minutes took 45+ minutes with zero results when two jobs ran in parallel).
+- The project's own `venv/` already has the heavy deps (`opencv-python`, `mediapipe`, etc.) installed and working — use `./venv/Scripts/python.exe` (Windows) rather than trying to reinstall a fresh environment.
+- Windows console encoding: avoid non-cp1252 characters (emoji, `✓`, box-drawing beyond em-dash) in anything passed to `print()` in scripts meant to run in a plain Windows terminal — this caused a real crash in `scripts/analyze_video.py` mid-project. Em-dashes (`—`) are fine; checkmarks/emoji are not.

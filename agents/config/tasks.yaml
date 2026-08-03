@@ -1,0 +1,24 @@
+vitals_extraction_task:
+  description: "The patient video/session is identified as '{video_path}'. Vitals have ALREADY been extracted by the deterministic signal-processing pipeline (core/rppg.py) — they are provided below; do not call the Vitals Extraction Tool again to re-derive them, since re-running it wastes a full video-processing pass and cannot produce a different number:
+
+                {precomputed_vitals}
+
+                Restate these exact figures (do not alter, round differently, or invent additional values) as a structured, human-readable summary. If the tool result indicates failure or missing data, report that plainly instead of filling in a plausible-sounding number."
+  expected_output: "A structured clinical summary of the patient's extracted biometrics and signal diagnostics, restating the provided values exactly."
+  agent: perception_agent
+
+diagnostic_triage_task:
+  description: "A deterministic clinical scoring engine (core/clinical.py) has already computed the authoritative ESI level and Compensated Shock determination for this patient from the biometrics above — it is NOT your job to compute or override these numbers. Your job is to explain WHY, in clear clinical language a triage nurse would trust, referencing the reasoning trace and the retrieved guideline/literature context below.
+
+                {clinical_assessment}
+
+                {grounding_context}
+
+                Write a diagnostic narrative that: (1) restates the ESI level and shock flag exactly as given above, (2) explains the reasoning trace in plain clinical language, (3) references at least one retrieved guideline/literature snippet by name where relevant, and (4) notes the confidence level and whether manual review is flagged. Do not propose a different ESI level, shock flag, or priority score than the ones provided — your role is explanation, not computation."
+  expected_output: "A clinical diagnostic narrative that reproduces the given ESI level and shock flag verbatim, with explainable reasoning grounded in the provided guideline/literature context."
+  agent: diagnostic_agent
+
+prioritization_coordination_task:
+  description: "The ESI level, priority score, and shock flag for this patient are fixed by the deterministic clinical engine — restate them exactly, do not recompute them. Take the Diagnostic Agent's narrative and produce the final structured JSON response containing: 'esi_level' (must exactly match the value given in the diagnostic assessment), 'priority_score' (must exactly match the value given), 'primary_diagnosis' (must exactly match the value given), 'is_shock' (must exactly match the boolean given), and a concise 'triage_summary' (1-3 sentences) synthesizing the clinical narrative for a triage nurse glancing at the queue."
+  expected_output: "A structured triage recommendation in JSON format whose esi_level/priority_score/is_shock/primary_diagnosis fields exactly match the deterministic assessment, plus a concise natural-language triage_summary."
+  agent: coordinator_agent

@@ -1,0 +1,15 @@
+flask
+opencv-python
+numpy
+scipy
+Pillow
+mediapipe>=0.10.0
+certifi
+python-dotenv
+google-generativeai
+crewai
+langchain
+langchain-nvidia-ai-endpoints
+langchain-groq
+flask-cors
+psycopg2-binary

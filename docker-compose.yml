@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  # Python Flask backend (incorporating OpenCV and MediaPipe)
+  vital-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vital-backend-service
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./uploads:/app/uploads
+    env_file:
+      - .env
+    environment:
+      - FLASK_DEBUG=false
+    restart: always
+
+  # Next.js Frontend
+  vital-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vital-frontend-service
+    ports:
+      - "3000:3000"
+    depends_on:
+      - vital-backend
+    restart: always
