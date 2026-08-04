@@ -126,6 +126,31 @@ _LOCK_CONFIRM_STREAK_NORMAL   = 12   # cycles required to confirm a non-harmonic
 _LOCK_CONFIRM_STREAK_HARMONIC = 30   # cycles required to confirm a harmonic-ratio jump (much more skepticism)
 _LOCK_PRIOR_LOW, _LOCK_PRIOR_HIGH = 55.0, 105.0   # typical resting-HR band — soft tie-breaker only, never a hard cutoff
 
+# bpm_history "unstick" threshold — see get_final_summary()'s history-append
+# gate. That gate rejects any reading more than 18bpm from the median of the
+# last 5 *accepted* entries, to keep single-frame noise out of the session
+# summary. Found via subject37 trace: if the first few accepted entries
+# happen to land during a brief wrong burst early in cold-start convergence
+# (n=7 entries there), every later (correct, stable) reading can be
+# permanently rejected for the rest of the session, because the anchor
+# itself never gets to update. Rather than trust a stale anchor forever, a
+# long enough streak of consistently-rejected-but-mutually-agreeing readings
+# is treated as a genuine sustained plateau and allowed to re-anchor.
+#
+# This must stay narrowly scoped, though — see _HISTORY_UNSTICK_MAX_HISTORY.
+# subject41 trace proved the naive always-on version actively harmful: its
+# signal is still genuinely bimodal across the WHOLE clip post-subharmonic-
+# promotion (not just at cold start), so a long-sustained streak on the
+# WRONG cluster can legitimately build up later in the session too. The
+# previous "fixed" 8.2 BPM error on subject41 turns out to have been this
+# exact freeze bug accidentally anchoring on the correct early cluster and
+# never letting go — not a real resolution of the ambiguity. Unsticking
+# unconditionally traded that lucky freeze for a genuine regression
+# (8.2 -> 41.8 BPM error), confirmed by re-running the real 56-session
+# validation (see data/evolution/09-history-freeze-bug.md).
+_HISTORY_UNSTICK_STREAK = 150   # cycles (~5s at 30fps) of sustained disagreement before re-anchoring
+_HISTORY_UNSTICK_MAX_HISTORY = 10   # only allow unstick while the frozen anchor is still this fresh/untested
+
 
 # ── Subharmonic-promotion peak selection ──────────────────────────────────────
 #
@@ -508,6 +533,7 @@ class AdvancedRPPG:
         self._raw_bpm_window: deque = deque(maxlen=_LOCK_CONFIRM_STREAK_HARMONIC)
         self._prior_defer_count: int = 0
         self.bpm_history: list[float] = []
+        self._history_reject_streak: int = 0
         self.frame_count: int = 0
 
         log.info(
@@ -707,8 +733,26 @@ class AdvancedRPPG:
                 recent_median = float(np.median(self.bpm_history[-5:]))
                 if abs(bpm - recent_median) <= 18:
                     self.bpm_history.append(float(bpm))
+                    self._history_reject_streak = 0
+                else:
+                    # See _HISTORY_UNSTICK_STREAK/_HISTORY_UNSTICK_MAX_HISTORY:
+                    # don't let a still-fresh, barely-supported anchor (e.g. a
+                    # brief wrong burst during cold-start) veto every later
+                    # reading forever — but ONLY while it's still fresh. Once
+                    # the anchor has substantial accumulated support, a later
+                    # sustained streak is far more likely to be a genuine
+                    # bimodal/harmonic episode than proof the anchor was
+                    # wrong, so it must NOT be allowed to override (confirmed
+                    # by real-data regression on subject41 when this guard
+                    # was missing — see _HISTORY_UNSTICK_MAX_HISTORY's note).
+                    self._history_reject_streak += 1
+                    if (self._history_reject_streak > _HISTORY_UNSTICK_STREAK
+                            and len(self.bpm_history) <= _HISTORY_UNSTICK_MAX_HISTORY):
+                        self.bpm_history.append(float(bpm))
+                        self._history_reject_streak = 0
             else:
                 self.bpm_history.append(float(bpm))
+                self._history_reject_streak = 0
 
         # ── Step 8: respiratory rate ──────────────────────────────────
         rr_bpm_raw, rr_conf = self._estimate_rr(ppg_raw)

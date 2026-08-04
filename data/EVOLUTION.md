@@ -31,6 +31,11 @@ each ends with a link to the next:
    testing whether the LLM agents faithfully restate the deterministic
    clinical assessment; a real 2h20m mistake made and fixed along the way;
    the strongest single finding of the project.
+10. [09 — A Third Bug, and a Fix That Broke the Flagship Case](evolution/09-history-freeze-bug.md)
+    — a third, independent bug found by tracing a regression; a first fix
+    that worked on its target but silently broke the project's most-cited
+    result; what that revealed; the corrected, verified fix. MAE 8.7 → 8.4
+    BPM, 52% total reduction across the whole debugging thread.
 
 Nothing here is invented after the fact — this is what actually happened,
 including the mistakes. Every claim in each chapter points at the actual

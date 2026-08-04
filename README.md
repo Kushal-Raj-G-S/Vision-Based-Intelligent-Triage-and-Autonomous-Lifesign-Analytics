@@ -283,24 +283,24 @@ python scripts/validate_dataset.py --manifest manifest.csv --skip-synthetic
 
 | Metric | Value |
 | :--- | :--- |
-| Overall MAE | **8.7 BPM** (n=56) |
-| Overall RMSE | 15.8 BPM |
-| Status | CONSUMER GRADE overall (MAE ≥ 8 BPM) — **UBFC-rPPG subset alone (n=41) is 7.8 BPM, crossing into RESEARCH GRADE** |
+| Overall MAE | **8.4 BPM** (n=56) |
+| Overall RMSE | 15.6 BPM |
+| Status | CONSUMER GRADE overall (MAE ≥ 8 BPM) — **UBFC-rPPG subset alone (n=41) is 7.4 BPM, crossing into RESEARCH GRADE** |
 
 **Stratified by condition:**
 
 | Condition | MAE | n |
 | :--- | :--- | :--- |
-| Speech (talking) | **23.4 BPM** (worst — untouched by either fix below, see why) | 5 |
+| Speech (talking) | **23.4 BPM** (worst — untouched by any fix so far, see why) | 5 |
 | Rest | 6.5 BPM | 5 |
 | Arithmetic (mental stress) | 3.5 BPM | 5 |
-| UBFC-rPPG baseline (unlabeled) | 7.8 BPM | 41 |
+| UBFC-rPPG baseline (unlabeled) | 7.4 BPM | 41 |
 
 Speech staying flat while Rest/Arithmetic improved dramatically (from a prior pass of 18.4/12.7) is itself informative, not a failure — it confirms the speech-condition gap is really about mouth movement disrupting the pulsatile signal, not the two bugs fixed below (neither of which had anything to do with talking).
 
 **A second, unrelated bug found the same way as the first — by tracing an individual failing subject instead of guessing.** `test/dataset_2/subject25` showed a *completely different* failure signature from subject41: rock-stable, high-confidence, wrong the entire clip (not oscillating between two states). Checking its actual video file found the cause: it's recorded at **23.2 fps**, but every `AdvancedRPPG` construction site in this codebase hardcoded `fps=30` regardless of the source's real frame rate. Analyzing a 23.2fps video as if it were 30fps deterministically scales every frequency by (30/23.2 ≈ 1.29×) — 91.5 real bpm × 1.29 ≈ 118, matching the observed error almost exactly. Fixed by reading the actual FPS from the video file (`Camera.get_source_fps()`, `core/camera.py`) and using it everywhere an `AdvancedRPPG` engine is constructed — both the file-analysis path (`scripts/analyze_video.py`) and the live-webcam path (`web/routes.py::_reset`). Verified immediately on the two known-affected subjects: `subject25` 23.5→**3.5** BPM error, `subject26` 25.5→**2.5** BPM error.
 
-Combined effect of both fixes across all 56 sessions: **MAE 17.4 → 11.4 → 8.7 BPM (50% total reduction)**, RMSE 24.1 → 18.1 → 15.8.
+Combined effect of the fixes so far across all 56 sessions: **MAE 17.4 → 11.4 → 8.4 BPM (52% total reduction)**, RMSE 24.1 → 18.1 → 15.6. (A third bug, found after this section — see below — moved the last step from 8.7 to 8.4.)
 
 **The harmonic-ambiguity bug — root-caused, then genuinely (partially) fixed.** First found on `test/dataset_2/subject41`: the CHROM peak-picker was locking onto a spurious frequency at roughly half or double the true heart rate for sustained multi-second stretches, reproduced identically across three independent datasets (UBFC-rPPG, UBFC-Phys, rPPG-10 below).
 
@@ -318,7 +318,15 @@ Combined effect of both fixes across all 56 sessions: **MAE 17.4 → 11.4 → 8.
 | subject9 | 60.9 | **2.8** |
 | subject34 | 63.0 | **0.5** |
 
-**Honest downside — the subharmonic-promotion fix is not a universal win, even after the FPS fix recovered some of its casualties.** The FPS fix incidentally fixed one subharmonic-fix regression outright (UBFC-Phys `s4` rest: was 15.9 pre-fixes, 43.3 after subharmonic-promotion alone, 3.7 with both fixes — it turned out to also be a non-30fps video). But several sessions remain worse than the original, pre-any-fix baseline: `dataset_1/after-exercise` (11.0→32.9), `subject22` (41.0→46.8), `subject24` (5.9→20.4), `subject32` (6.0→19.3), `subject37` (4.8→21.0), and UBFC-Phys `s4` speech (9.6→22.5) — promoting to double the rate helps when the lock was genuinely a half-rate error, but occasionally misfires on a session that was already tracking correctly. Net effect across all 56 sessions is unambiguously positive (50% MAE reduction overall, combined with the FPS fix), but treat this as "meaningfully improved," not "solved" — these specific regressions are real, open, and not yet root-caused the way subject41/subject25 were.
+**Honest downside — the subharmonic-promotion fix is not a universal win, even after the FPS fix recovered some of its casualties.** The FPS fix incidentally fixed one subharmonic-fix regression outright (UBFC-Phys `s4` rest: was 15.9 pre-fixes, 43.3 after subharmonic-promotion alone, 3.7 with both fixes — it turned out to also be a non-30fps video). But several sessions remained worse than the original, pre-any-fix baseline: `dataset_1/after-exercise` (11.0→32.9), `subject22` (41.0→46.8), `subject24` (5.9→20.4), `subject32` (6.0→19.3), `subject37` (4.8→21.0, since fixed — see below), and UBFC-Phys `s4` speech (9.6→22.5) — promoting to double the rate helps when the lock was genuinely a half-rate error, but occasionally misfires on a session that was already tracking correctly. These regressions were real, open, and not root-caused the way subject41/subject25 were — until one of them was traced.
+
+**A third, independent bug — found by tracing `subject37`'s regression instead of assuming it was more subharmonic-promotion fallout.** Its per-cycle BPM readings converged and held rock-stable near 58 BPM (correct — ground truth 63.0) for nearly the whole clip, yet the session's final reported value was 84 BPM. Root cause was not in frequency estimation at all — it was in `get_final_summary()`'s history aggregation: the function only accepts a new reading into its history if it's within 18 BPM of the median of the *last 5 accepted* readings, to keep single-frame noise out of the final answer. But if the first handful of accepted readings happen to land during a brief wrong burst early in cold-start convergence, every later — correct, stable — reading gets rejected forever, because the rejection anchor itself never updates. `subject37`'s entire session-summary history ended up with just 7 entries, all from a wrong 82-89 BPM burst in the first couple of seconds; the correct ~58 BPM signal that dominated the rest of the two-thousand-frame clip was silently discarded the whole time.
+
+The first fix attempt (allow the anchor to "unstick" and re-anchor after any sufficiently long streak of sustained disagreement) genuinely fixed `subject37` — but broke `subject41`, dropping it from the celebrated 8.2 BPM error back to 41.8. Tracing *why* revealed something more interesting than a tuning mistake: `subject41`'s per-cycle readings are **still genuinely bimodal across the whole clip** even after subharmonic-promotion (in this trace, roughly 983 low-cluster vs. 933 high-cluster readings) — so the original "fixed, 8.2 BPM error" result was never a real resolution of subject41's ambiguity. It was this exact freeze bug accidentally anchoring on the correct cluster early and then never letting go — a second, unrelated bug propping up the reported result of the first fix. Unsticking unconditionally simply let the still-unresolved ambiguity resurface.
+
+The corrected fix narrows the escape hatch: re-anchoring is only allowed while the frozen anchor is still small (≤10 entries — genuinely untested, cold-start-fluke territory), never once it has accumulated substantial support. Verified: `subject37` stays fixed (21.0 → **6.0**), `subject41` is fully restored (**8.2**, unchanged), and the other pre-existing regressions (`subject22/24/32`, `after-exercise`, UBFC-Phys `s4` speech) are untouched either way — confirming they have a different, still-open root cause, not this one.
+
+Combined effect of all three fixes across all 56 sessions: **MAE 17.4 → 11.4 → 8.7 → 8.4 BPM**, RMSE 24.1 → 18.1 → 15.8 → 15.6 — a small but real, individually-verified improvement, not a guess. Full story, including the failed naive version and its regression trace, in [`data/evolution/09-history-freeze-bug.md`](data/evolution/09-history-freeze-bug.md).
 
 No skin-tone stratification exists yet — none of the three datasets used ship per-subject Fitzpatrick metadata (rPPG-10 does, but see below for why it can't run through this pipeline). The Fitzpatrick-inclusivity design goal stated earlier in this README remains unvalidated, not disproven — it just hasn't been tested.
 

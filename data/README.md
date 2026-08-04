@@ -16,9 +16,11 @@ duplicated here, to avoid two copies of the same file drifting apart:
 
 | What | Where |
 | :--- | :--- |
-| Real 56-session validation results | `test/validation_run5_final.log`, `test/validation_run6_fpsfix.log` |
+| Real 56-session validation results | `test/validation_run5_final.log`, `test/validation_run6_fpsfix.log`, `test/validation_run8_historyfix_v2.log` (current) |
+| The naive (broken) history-unstick fix's real-data regression | `test/validation_run7_historyfix.log` |
 | Harmonic lock-on root-cause traces (3 fix attempts) | `test/trace_subject41*.log` |
 | Hardcoded-FPS bug root-cause trace | `test/trace_subject25.log` |
+| History-freeze bug traces (subject37 fixed, subject41 regression + restore) | `test/trace_subject37_regression.log`, `test/trace_subject41_v4_regression.log` |
 | Agent narration faithfulness evaluation (raw + aggregated) | `test/agent_reliability_run2.log`, `test/agent_reliability_results.jsonl` |
 | Manifest of every real video used, with ground truth | `test/manifest.csv` |
 
