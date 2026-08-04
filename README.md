@@ -338,6 +338,35 @@ Worse than the full-pipeline number above, on lower-resolution, more heavily com
 
 **Performance note**: these are 10-minute clips (18,000 frames); the DSP core originally re-ran a full Welch FFT + cubic-spline HRV fit on every single frame, which took over 13 minutes with zero results for even one subject. `analyze_video_complete()` and the cropped-ROI script now support a `process_stride` (skip N-1 of every N expensive recomputations while still buffering every frame) — cut this specific run from an hours-long trajectory to ~10 minutes total. The live product path keeps `process_stride=1` (unchanged, real-time frame-by-frame updates); only batch validation over long clips uses a higher stride.
 
+### 4. Agent narration faithfulness — does the LLM layer actually do what it's told?
+
+Everything above validates the rPPG **signal** pipeline. None of it says anything about whether the multi-agent LLM layer (`agents/`) actually behaves as instructed — specifically, whether the Diagnostic/Coordinator agents faithfully **restate** the deterministic `core/clinical.py` assessment, or drift/hallucinate a different number, despite `agents/config/tasks.yaml` explicitly instructing them to restate exact given values and nothing else.
+
+`scripts/evaluate_agent_reliability.py` runs the real CrewAI pipeline (actual NVIDIA NIM calls, not a mock) against 8 clinical scenarios spanning the full severity range (normal, isolated tachycardia/tachypnea, mild/severe shock, bradycardia, low-signal-quality, no-signal), each run twice, and checks whether the LLM's final JSON output exactly matches the deterministic assessment on every field:
+
+```bash
+python scripts/evaluate_agent_reliability.py --repeats 2
+```
+
+**Real measured results, 16 runs, `meta/llama-3.1-8b-instruct`:**
+
+| Field | Faithfulness rate |
+| :--- | :--- |
+| JSON parses at all | 15/16 (93.8%) |
+| ESI level restated correctly | 13/16 (81.2%) |
+| **Priority score restated correctly** | **1/16 (6.2%)** |
+| Shock flag restated correctly | 15/16 (93.8%) |
+| Diagnosis text — exact wording | 6/16 (37.5%) |
+| Diagnosis text — correct meaning, different words | 12/16 (75.0%) |
+
+**Why the 6.2% number is the most important finding in this whole project, not just a QA metric.** Even when explicitly instructed "restate this exact number, do not recompute it," the LLM almost never produced a clean, correct integer for `priority_score` — it repeatedly stuffed descriptive text into the field instead (e.g. `"esi_level": "2 (Emergent)"`, `"priority_score": "ESI Level 2 — Emergent / Compensated Shock (score=0.311)"`). This is **empirical, measured proof** — not a defensive-programming assumption — that the project's core safety rule (the deterministic engine is the sole source of truth; the LLM narrates, it never computes or holds the authoritative number — see [The one rule that matters most here](CLAUDE.md)) was necessary, not merely cautious. Had this system trusted the LLM's own JSON for `priority_score`, as many "agentic AI in healthcare" systems do, it would have assigned the **wrong queue priority to a patient over 90% of the time.**
+
+A related finding from the same runs: the LLM occasionally attempted to call tools that don't exist at all (`structured_summary_tool`, `clinical_summary_tool` — "Tool not found") — a second, independent reliability gap in the agent layer.
+
+**A real mistake happened building this evaluation, and it's documented rather than hidden**: see [`data/EVOLUTION.md`](data/EVOLUTION.md), Era 8, for the full story of a 2-hour-20-minute infinite loop this caused, its root cause (a `Camera` dummy-mode fallback with no termination condition, combined with the LLM not reliably following a "don't re-call this tool" instruction), and the three independent layers of fix now in place against it recurring.
+
+For the complete, chronological story of every bug found and every fix attempted across this entire project — including the ones that failed — see **[`data/EVOLUTION.md`](data/EVOLUTION.md)**.
+
 ---
 
 # 🔒 Security Notes

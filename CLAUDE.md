@@ -6,6 +6,11 @@ genuinely unresolved — this project was put through an honesty audit and
 several rounds of real-data validation; don't undo that by re-introducing
 claims the code doesn't back up.
 
+**For the full chronological story** (every bug found, every fix tried
+including the failed ones, every real number, in the order it happened),
+see [`data/EVOLUTION.md`](data/EVOLUTION.md). This file is the short/brief
+version — that one is the detailed one.
+
 ## What this project is
 
 VITAL (aka "Opti-Screen") is a college project: contactless vitals
@@ -67,6 +72,8 @@ compute a number that drives real triage priority.
 - POS algorithm (`algorithm="POS"` in `AdvancedRPPG`) — present in `core/rppg.py`, has its own separate harmonic lock-on under sensor noise (26.71 BPM MAE at HR≲90bpm), and is **not wired into any API route or UI control** — every instantiation site hardcodes CHROM. Don't "fix" this by wiring POS into the app without re-validating it first.
 - Respiratory rate (`_estimate_rr`/`_smooth_rr` in `core/rppg.py`) — fixed a real bug (fake single-segment "Welch" averaging + zero temporal smoothing, causing RR to bounce across its entire 6-30 br/min search band), verified via synthetic signal to converge instead of edge-locking. **Never validated against real ground truth** — none of the three real datasets in `test/` provide a respiration-rate ground truth (UBFC-rPPG/UBFC-Phys/rPPG-10 all give HR-only or ECG/BVP), so there is still no real-data RR accuracy number.
 - Skin-tone stratified accuracy — still not computed. None of the three datasets currently in `test/` ship per-subject skin-tone metadata (rPPG-10 does have Fitzpatrick labels in its `Subject Data.xlsx`, but rPPG-10's videos can't run through the face-detection pipeline at all — see `scripts/validate_cropped_roi.py`'s docstring). The README's "Fitzpatrick Inclusivity" language is a design goal, not a validated result — keep it phrased that way.
+- **Agent narration faithfulness (`scripts/evaluate_agent_reliability.py`) — the LLM layer restates `priority_score` correctly only 6.2% of the time** (16 real runs, `meta/llama-3.1-8b-instruct`), even when explicitly told to copy the given number verbatim. ESI level (81.2%) and shock flag (93.8%) fare much better. This is the empirical justification for the "one rule that matters most" at the top of this file — full numbers in README's Agent Narration Faithfulness section, full story in `data/EVOLUTION.md` Era 8.
+- **`Camera.get_frame()` in dummy_mode never returns `frame_bytes=None`** (by design, for the live MJPEG stream — it should keep showing a placeholder rather than end). Any NEW code that loops on `frame_bytes is None` as its stop condition (like `analyze_video_complete()` used to) will hang forever if the source fails to open. This caused a real 2h20m infinite loop when a test script passed a bad path and the LLM called a tool with it despite being told not to. Fixed in `analyze_video_complete()` with an immediate `camera.dummy_mode` check plus a hard 100,000-frame cap — if you write another function that loops on `camera.get_frame()`, check `dummy_mode` first, don't rely on `None` alone.
 - Live camera is single-session by design (`web/__init__.py` holds one global `camera`/`rppg_engine`/`session`) — this matches "one workstation, one webcam," but means the "dynamic triage queue" is a sequential log of completed runs, not concurrent multi-patient live monitoring. Don't describe it as the latter.
 - Batch validation over very long videos needs `process_stride` (see rPPG-10's `validate_cropped_roi.py`, stride=3) — running the full DSP pipeline (Welch FFT + cubic-spline HRV) every single frame turned a 10-minute video into 13+ minutes with zero results. But `process_stride` is NOT free to use anywhere — see the harmonic-lock-on writeup above for why `validate_dataset.py`'s manifest path deliberately stays at stride=1 (default): the BPM lock/subharmonic logic counts in cycles, not time, so striding changes tracking *behavior*. The live product path (`agents/tools.py` → `analyze_video_complete(video_path)`, no stride arg) is unaffected either way.
 

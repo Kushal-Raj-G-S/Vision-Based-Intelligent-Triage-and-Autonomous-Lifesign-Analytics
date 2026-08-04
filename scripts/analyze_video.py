@@ -45,6 +45,23 @@ def analyze_video_complete(video_path, process_stride: int = 1):
     # different bug from the harmonic lock-on issue, found by tracing why
     # subject25's reading was rock-stable and confident, yet still wrong.
     camera = Camera(source=video_path)
+
+    # FAIL FAST on a bad/missing source. Camera.get_frame() in dummy_mode
+    # returns an endless "waiting for camera" placeholder frame (correct
+    # behaviour for the live MJPEG stream, which should keep displaying
+    # something rather than end) — but it NEVER returns frame_bytes=None,
+    # which is the only stop condition this loop checks. A bad video_path
+    # here used to spin forever generating placeholder frames, burning CPU
+    # indefinitely with no error and no result. Found the hard way: a test
+    # script passed a nonexistent path and the process ran for 2+ hours
+    # before anyone noticed it could never finish.
+    if camera.dummy_mode:
+        return {
+            'success': False,
+            'error': f'Could not open video source: {video_path}',
+            'frames_analyzed': 0,
+        }
+
     video_fps = camera.get_source_fps(default=30.0)
     rppg = AdvancedRPPG(fps=int(round(video_fps)), window_size=max(300, int(video_fps * 10)))
     print(f"Detected source FPS: {video_fps:.2f}")
@@ -52,10 +69,22 @@ def analyze_video_complete(video_path, process_stride: int = 1):
     frame_count = 0
     bpm_readings = []
 
+    # Second line of defence: an absolute frame cap. Even a genuinely long
+    # video shouldn't need more than this (100,000 frames is ~55min @ 30fps,
+    # well beyond every real clip validated in this project) — if some
+    # future bug reintroduces runaway looping, this guarantees termination
+    # instead of a silent multi-hour hang.
+    MAX_FRAMES = 100_000
+
     print("Processing video frames...")
 
     # Process entire video
     while True:
+        if frame_count >= MAX_FRAMES:
+            print(f"[WARNING] Hit the {MAX_FRAMES}-frame safety cap — stopping early. "
+                  f"This should not happen on a real, correctly-opened video file.")
+            break
+
         frame_bytes, roi_data, is_moving, motion_delta = camera.get_frame()
 
         if frame_bytes is None:
