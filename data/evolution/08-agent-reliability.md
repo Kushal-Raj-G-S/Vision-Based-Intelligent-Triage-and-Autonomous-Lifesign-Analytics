@@ -76,25 +76,29 @@ reliability gap in the agent layer.
 
 ## Model size is a real, honest factor here, not an excuse
 
-The model under test is `meta/llama-3.1-8b-instruct` — chosen in
-[Era 2](02-live-testing-bugs.md) for speed/cost over the larger
-`meta/llama-3.3-70b-instruct` (which is still configured as the first
-fallback in `agents/crew.py`, not removed). Smaller instruction-tuned models
-are well-documented in the field to be measurably worse at strict
-structured-output fidelity than larger ones — this isn't a defect unique to
-this project's prompting, it's a known, general property of model scale.
-That context matters for how this finding should be read: it is not "LLMs
-cannot be trusted for this," it is "*this specific 8B model*, chosen for
-cost/speed, has a measured 6.2% numeric-fidelity rate — and the system's
-architecture is built so that number doesn't matter for safety even though
-it's low."
+The model under test is `meta/llama-3.1-8b-instruct` — adopted in
+[Era 2](02-live-testing-bugs.md) not as a cost preference but out of
+necessity: `meta/llama-3.3-70b-instruct`'s response latency made
+interactive live-webcam development impractical, so 8B was the only model
+fast enough to iterate against in real time (70B is still configured as
+the first fallback in `agents/crew.py`, not removed). Smaller
+instruction-tuned models are well-documented in the field to be measurably
+worse at strict structured-output fidelity than larger ones — this isn't a
+defect unique to this project's prompting, it's a known, general property
+of model scale. That context matters for how this finding should be read:
+it is not "LLMs cannot be trusted for this," it is "*this specific 8B
+model*, the only one fast enough for this project's development loop, has
+a measured 6.2% numeric-fidelity rate — and the system's architecture is
+built so that number doesn't matter for safety even though it's low."
 
 **A natural, not-yet-run follow-up experiment**: re-run the exact same 8
 scenarios against the 70B fallback model directly and compare fidelity
-rates. If 70B scores meaningfully higher, that becomes a second concrete,
-citable data point — a measured cost/reliability tradeoff table
-(model size vs. speed vs. faithfulness), not just a single model's score in
-isolation. This has not been done yet as of this writing.
+rates. Even though 70B's latency ruled it out for interactive development,
+it's still a legitimate offline comparison point — if 70B scores
+meaningfully higher, that becomes a measured latency-vs-faithfulness
+tradeoff table (not just a single model's score in isolation), and it
+directly tests the "model size explains the gap" hypothesis instead of just
+asserting it. This has not been done yet as of this writing.
 
 **Next: see the top-level [`data/README.md`](../README.md) for where the
 project stands now and what's still open.**

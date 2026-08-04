@@ -31,8 +31,11 @@ when a real person uses the real product, not when reading the code.
   the frontend's existing "only update display on HTTP 200" logic could do
   its job.
 - Model swap: primary LLM changed from `meta/llama-3.3-70b-instruct` to
-  `meta/llama-3.1-8b-instruct` (cheaper/faster), with 70B demoted to first
-  fallback rather than dropped. **This choice matters a lot later — see
+  `meta/llama-3.1-8b-instruct`, with 70B demoted to first fallback rather
+  than dropped. Not a cost-saving preference — 70B's response latency was
+  slow enough to make interactive live-webcam testing impractical during
+  active development; 8B was the only option fast enough to iterate
+  against in real time. **This choice matters a lot later — see
   [Era 8](08-agent-reliability.md).**
 - `core/camera.py` — added full 468-point face-mesh dot visualization
   (cosmetic only) and trimmed-mean spatial pooling for the forehead/cheek
