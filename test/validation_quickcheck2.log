@@ -1,0 +1,28 @@
+==========================================================================================
+REAL VIDEO VALIDATION
+==========================================================================================
+Video                        | GT BPM   | Our BPM  | Abs Err  | Group           
+------------------------------------------------------------------------------------------
+Processing test/dataset_1/after-exercise/vid-001.avi...[Ktest/dataset_1/after-exerc   | 113.9    | 103.3    | 10.6     | unlabeled       
+Processing test/dataset_2/subject25/vid.avi...[Ktest/dataset_2/subject25/v   | 91.5     | 115.1    | 23.6     | unlabeled       
+Processing test/dataset_2/subject41/vid.avi...[Ktest/dataset_2/subject41/v   | 100.8    | 47.7     | 53.1     | unlabeled       
+Processing test/dataset_2/subject46/vid.avi...[Ktest/dataset_2/subject46/v   | 96.7     | 55.8     | 40.9     | unlabeled       
+Processing test/dataset_2/subject47/vid.avi...[Ktest/dataset_2/subject47/v   | 111.4    | 112.4    | 1.0      | unlabeled       
+Processing test/dataset_2/subject49/vid.avi...[Ktest/dataset_2/subject49/v   | 87.6     | 51.2     | 36.4     | unlabeled       
+Processing test/dataset_2/subject8/vid.avi...[Ktest/dataset_2/subject8/vi   | 111.2    | 109.8    | 1.4      | unlabeled       
+Processing test/dataset_2/subject9/vid.avi...[Ktest/dataset_2/subject9/vi   | 108.2    | 47.5     | 60.7     | unlabeled       
+Processing test/ubfc_phys/s33/s33/vid_s33_T2.avi...[Ktest/ubfc_phys/s33/s33/vid   | 69.8     | 91.8     | 22.0     | speech          
+Processing test/ubfc_phys/s4/s4/vid_s4_T1.avi...[Ktest/ubfc_phys/s4/s4/vid_s   | 81.7     | 66.4     | 15.3     | rest            
+------------------------------------------------------------------------------------------
+Overall MAE:  26.50 BPM  (n=10)
+Overall RMSE: 33.00 BPM
+
+Per-group breakdown — an aggregate MAE can hide large subgroup
+disparities (this is exactly the skin-tone/motion fairness gap this
+project previously claimed was handled without evidence):
+  rest                 MAE=15.30 BPM  (n=1)
+  speech               MAE=22.00 BPM  (n=1)
+  unlabeled            MAE=28.46 BPM  (n=8)
+
+Status: CONSUMER GRADE (MAE >= 8 BPM)
+==========================================================================================

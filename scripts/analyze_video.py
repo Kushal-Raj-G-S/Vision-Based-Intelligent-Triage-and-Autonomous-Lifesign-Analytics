@@ -38,9 +38,16 @@ def analyze_video_complete(video_path, process_stride: int = 1):
     print(f"ANALYZING: {video_path}")
     print(f"{'='*70}\n")
 
-    # Initialize
-    rppg = AdvancedRPPG(fps=30, window_size=300)
+    # Initialize — camera FIRST, so we can read the video's ACTUAL frame
+    # rate rather than assuming 30fps. Videos not encoded at ~30fps (several
+    # real UBFC-rPPG subjects are ~23.2fps) were getting a deterministic,
+    # confidently-wrong reading scaled by (30 / real_fps) — a completely
+    # different bug from the harmonic lock-on issue, found by tracing why
+    # subject25's reading was rock-stable and confident, yet still wrong.
     camera = Camera(source=video_path)
+    video_fps = camera.get_source_fps(default=30.0)
+    rppg = AdvancedRPPG(fps=int(round(video_fps)), window_size=max(300, int(video_fps * 10)))
+    print(f"Detected source FPS: {video_fps:.2f}")
 
     frame_count = 0
     bpm_readings = []
@@ -96,10 +103,27 @@ def analyze_video_complete(video_path, process_stride: int = 1):
 
     # Calculate final results
     if len(bpm_readings) > 0:
-        # Use last 10 readings for final average (most stable)
+        # Use last 10 readings for confidence/SQI/stability display stats
         recent_readings = bpm_readings[-10:] if len(bpm_readings) >= 10 else bpm_readings
 
-        final_bpm = np.mean([r['bpm'] for r in recent_readings])
+        # final_bpm specifically comes from rppg.get_final_summary() — its
+        # IQR-filtered median over the engine's OWN admitted bpm_history,
+        # not a plain mean of whichever 10 readings happen to fall at the
+        # end of the clip. This used to be two different "final answer"
+        # algorithms for the same concept: the live webcam path (web/routes.py)
+        # already used get_final_summary(); this file-based/batch path used
+        # its own "mean of last 10" instead. That mattered in practice — on a
+        # video where the BPM tracker settles into a wrong lock right at the
+        # very end (a real case found via subject41), "last 10 readings"
+        # reports whatever the tail happens to be, while the full-history
+        # median correctly reflects that the correct rate dominated most of
+        # the clip. Two call sites silently disagreeing about something this
+        # safety-relevant is its own bug, independent of any DSP accuracy fix.
+        summary = rppg.get_final_summary()
+        final_bpm = summary.get('final_bpm')
+        if final_bpm is None:
+            final_bpm = np.mean([r['bpm'] for r in recent_readings])
+
         final_confidence = np.mean([r['confidence'] for r in recent_readings])
         stability = np.std([r['bpm'] for r in recent_readings])
         final_sqi = np.mean([r['sqi'] for r in recent_readings])

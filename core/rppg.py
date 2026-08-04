@@ -127,6 +127,62 @@ _LOCK_CONFIRM_STREAK_HARMONIC = 30   # cycles required to confirm a harmonic-rat
 _LOCK_PRIOR_LOW, _LOCK_PRIOR_HIGH = 55.0, 105.0   # typical resting-HR band — soft tie-breaker only, never a hard cutoff
 
 
+# ── Subharmonic-promotion peak selection ──────────────────────────────────────
+#
+# Root-cause fix attempt #2 for the harmonic lock-on / "octave error" failure
+# mode (confirmed via real-dataset validation, reproduced identically across
+# three independent datasets: peak-picker locks onto ~0.5x the true heart
+# rate — the ~2x cases are rarer — for sustained multi-second stretches).
+#
+# Fix attempt #1 (Harmonic Product Spectrum, upward-summing power at a
+# candidate's 2x/3x points) was tried and DISPROVEN by re-tracing the known
+# failing case (test/dataset_2/subject41): it made no difference at all.
+# The reasoning why, worked out after the fact: HPS is biased in the WRONG
+# direction for a subharmonic-dominant failure specifically. If the true
+# rate is 100bpm and the false candidate is ~50bpm, then scoring the ~50bpm
+# candidate by summing power at its own 2x point (~100bpm) picks up the
+# REAL signal's energy and misreads it as "supporting harmonic evidence
+# for the 50bpm candidate" — reinforcing the wrong answer instead of
+# penalizing it. Classic HPS works for the opposite error (mistaking a true
+# harmonic for the fundamental); it doesn't help when the failure is
+# undershooting to a subharmonic, which is this pipeline's dominant failure
+# direction.
+#
+# Corrected approach: instead of rewarding a candidate for having power at
+# its multiples (ambiguous, as above), directly check whether the TOP
+# candidate's double has suspiciously strong power relative to itself. If
+# a candidate f0 has a comparable-or-stronger companion peak at ~2*f0, that
+# is direct evidence f0 itself might be the spurious subharmonic — promote
+# to 2*f0 instead. This is asymmetric on purpose (checks upward promotion
+# only) because the observed failure direction is undershooting, not
+# overshooting.
+_SUBHARM_PROMOTE_RATIO = 0.55  # promote to 2x if that bin has >= 55% of the top candidate's power
+_SUBHARM_TOL_HZ        = 0.08  # how close to exactly 2x a bin must land to count
+
+
+def _select_dominant_freq_hps(valid_freqs: np.ndarray, valid_psd: np.ndarray) -> tuple[float, int]:
+    """
+    Select the dominant frequency, checking for and correcting a specific
+    subharmonic-lock signature: the raw top peak has a comparably-strong
+    companion at almost exactly double its frequency. Returns (frequency_hz,
+    bin_index). Name kept as `_hps` for call-site continuity even though the
+    technique is no longer classic HPS — see module comment above for why.
+    """
+    n = len(valid_psd)
+    top_idx = int(np.argmax(valid_psd))
+    if n < 3:
+        return float(valid_freqs[top_idx]), top_idx
+
+    f0 = valid_freqs[top_idx]
+    target = f0 * 2.0
+    j = int(np.argmin(np.abs(valid_freqs - target)))
+    if abs(valid_freqs[j] - target) <= _SUBHARM_TOL_HZ:
+        if valid_psd[j] >= _SUBHARM_PROMOTE_RATIO * valid_psd[top_idx]:
+            return float(valid_freqs[j]), j
+
+    return float(f0), top_idx
+
+
 # ── Utility ───────────────────────────────────────────────────────────────────
 
 def _safe_butter_sos(low: float, high: float, fs: float, order: int = 4) -> Optional[np.ndarray]:
@@ -552,8 +608,7 @@ class AdvancedRPPG:
         if len(valid_psd) == 0:
             return self._empty_result()
 
-        peak_idx       = int(np.argmax(valid_psd))
-        dominant_freq  = float(valid_freqs[peak_idx])
+        dominant_freq, peak_idx = _select_dominant_freq_hps(valid_freqs, valid_psd)
         bpm_raw        = dominant_freq * 60.0
 
         # Time-domain hybrid estimator for short buffers (cold start) to stabilize resolution wobbles

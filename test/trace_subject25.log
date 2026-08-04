@@ -1,0 +1,24 @@
+frame=  120 bpm= 120.4 sqi= 57.9 snr=  0.0 status=OK          
+frame=  180 bpm= 116.9 sqi= 63.0 snr=  2.2 status=OK          
+frame=  240 bpm= 115.1 sqi= 67.2 snr=  4.4 status=OK          
+frame=  300 bpm= 114.8 sqi= 69.8 snr=  5.9 status=OK          
+frame=  360 bpm= 113.4 sqi= 71.6 snr=  6.7 status=OK          
+frame=  420 bpm= 112.1 sqi= 74.7 snr=  8.7 status=OK          
+frame=  480 bpm= 112.9 sqi= 74.9 snr=  8.9 status=OK          
+frame=  540 bpm= 114.3 sqi= 76.2 snr= 10.3 status=OK          
+frame=  600 bpm= 115.1 sqi= 75.7 snr= 10.4 status=OK          
+frame=  660 bpm= 115.6 sqi= 74.8 snr=  9.0 status=OK          
+frame=  720 bpm= 118.5 sqi= 61.8 snr=  1.6 status=OK          
+frame=  780 bpm= 121.2 sqi= 60.6 snr=  1.7 status=OK          
+frame=  840 bpm= 121.3 sqi= 60.7 snr=  1.4 status=OK          
+frame=  900 bpm= 119.6 sqi= 54.7 snr=  0.0 status=OK          
+frame=  960 bpm= 116.9 sqi= 56.2 snr=  0.0 status=OK          
+frame= 1020 bpm= 114.9 sqi= 59.6 snr=  1.5 status=OK          
+frame= 1080 bpm= 112.1 sqi= 67.2 snr=  4.1 status=OK          
+frame= 1140 bpm= 110.7 sqi= 71.2 snr=  6.9 status=OK          
+frame= 1200 bpm= 114.1 sqi= 70.3 snr=  5.7 status=OK          
+frame= 1260 bpm= 114.4 sqi= 68.2 snr=  4.5 status=OK          
+frame= 1320 bpm= 112.5 sqi= 64.0 snr=  2.8 status=OK          
+frame= 1380 bpm= 113.0 sqi= 61.3 snr=  1.7 status=OK          
+frame= 1440 bpm= 115.1 sqi= 65.9 snr=  3.5 status=OK          
+FINAL: {'final_bpm': 115, 'min_bpm': 111, 'max_bpm': 122, 'avg_bpm': 115, 'stability_percent': 88, 'remark': 'Monitor (Mildly Elevated)', 'total_readings': 1343, 'algorithm': 'CHROM'}  GT=91.5

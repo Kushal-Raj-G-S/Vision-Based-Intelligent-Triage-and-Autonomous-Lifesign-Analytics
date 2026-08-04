@@ -197,12 +197,18 @@ def run_manifest_validation(manifest_path):
 
         print(f"Processing {video_path}...", end="\r")
         with _HiddenPrints():
-            # stride=2: batch validation over potentially many long videos —
-            # re-running the full Welch+cubic-spline HRV pass on every
-            # single frame (the live app's default) turned a handful of
-            # long real clips into an hours-long run in practice. add_frame()
-            # still runs every frame, so the signal window stays complete.
-            result = analyze_video_complete(video_path, process_stride=2)
+            # stride=1 (default) — NOT 2. Found the hard way: the BPM
+            # lock/candidate hysteresis and subharmonic-promotion logic in
+            # core/rppg.py count in *cycles* (calls to process_ppg_signal()),
+            # not real time. Striding silently doubles their effective time
+            # window, changing tracking BEHAVIOR, not just speed — a direct
+            # trace at stride=1 showed a real fix; a batch run at stride=2
+            # showed no change, on the exact same video. UBFC-rPPG/UBFC-Phys
+            # clips are short enough (1-3 min) that stride=1 is fine here;
+            # the stride optimization stays reserved for rPPG-10's genuinely
+            # long (10 min) clips in validate_cropped_roi.py, where no
+            # cycle-counted hysteresis is in play.
+            result = analyze_video_complete(video_path)
         sys.stdout.write("\033[K")  # clear the "Processing..." line
         group = ",".join(filter(None, [row.get('skin_tone', ''), row.get('motion', '')])) or "unlabeled"
 

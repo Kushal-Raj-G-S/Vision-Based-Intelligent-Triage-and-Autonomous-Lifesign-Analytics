@@ -318,6 +318,30 @@ class Camera:
         self._source = None
         return False
 
+    def get_source_fps(self, default: float = 30.0) -> float:
+        """
+        Return the ACTUAL frame rate of the opened source, not an assumed
+        constant. Every AdvancedRPPG construction site in this codebase used
+        to hardcode fps=30 regardless of the real video's frame rate — fine
+        for sources that genuinely are ~30fps, but for any video encoded at
+        a different rate (e.g. 23.98fps, common for several UBFC-rPPG
+        subjects), this caused a deterministic, silent bias: analyzing
+        frames at the wrong assumed sample rate scales every frequency in
+        the Welch PSD by (assumed_fps / actual_fps), which showed up as a
+        confident, rock-stable, but simply WRONG heart rate — a completely
+        different failure mode from the harmonic lock-on bug (confirmed via
+        real-dataset trace: subject25 at 23.2fps read ~115bpm against a true
+        91.5bpm; 91.5 * (30/23.2) ≈ 118, matching almost exactly).
+        """
+        if self.video is not None:
+            try:
+                fps = float(self.video.get(cv2.CAP_PROP_FPS))
+                if fps and fps > 1.0:  # guard against 0/NaN/nonsense values some backends return
+                    return fps
+            except Exception:
+                pass
+        return default
+
     def release_video(self) -> None:
         """Release the capture device; keep face detectors alive."""
         if self.video is not None:

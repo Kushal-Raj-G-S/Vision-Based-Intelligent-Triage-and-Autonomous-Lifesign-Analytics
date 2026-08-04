@@ -333,8 +333,15 @@ def _reset(source, live):
             web.camera.release_video()
         from core.camera import Camera
         from core.rppg import AdvancedRPPG
-        web.camera         = Camera(source=source)
-        web.rppg_engine    = AdvancedRPPG(fps=30, window_size=300)
+        web.camera = Camera(source=source)
+        # Use the source's ACTUAL frame rate, not a hardcoded 30 — an
+        # uploaded video not encoded at ~30fps (confirmed on several real
+        # UBFC-rPPG subjects, ~23.2fps) previously produced a confident but
+        # deterministically wrong BPM, scaled by (30 / real_fps). Live
+        # webcams usually do negotiate close to 30fps, but there's no
+        # reason to assume it when we can just ask the device.
+        source_fps = web.camera.get_source_fps(default=30.0)
+        web.rppg_engine = AdvancedRPPG(fps=int(round(source_fps)), window_size=max(300, int(source_fps * 10)))
         web.session.frame_count    = 0
         web.session.start_time     = time.time()
         web.session.is_live_camera = live

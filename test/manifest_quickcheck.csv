@@ -1,0 +1,11 @@
+video,gt_bpm,skin_tone,motion,notes
+test/dataset_1/after-exercise/vid-001.avi,113.9,,,dataset_1:dataset_1\after-exercise
+test/dataset_2/subject25/vid.avi,91.5,,,dataset_2:dataset_2\subject25
+test/dataset_2/subject41/vid.avi,100.8,,,dataset_2:dataset_2\subject41
+test/dataset_2/subject46/vid.avi,96.7,,,dataset_2:dataset_2\subject46
+test/dataset_2/subject47/vid.avi,111.4,,,dataset_2:dataset_2\subject47
+test/dataset_2/subject49/vid.avi,87.6,,,dataset_2:dataset_2\subject49
+test/dataset_2/subject8/vid.avi,111.2,,,dataset_2:dataset_2\subject8
+test/dataset_2/subject9/vid.avi,108.2,,,dataset_2:dataset_2\subject9
+test/ubfc_phys/s33/s33/vid_s33_T2.avi,69.8,,speech,ubfc_phys:ubfc_phys\s33\s33:T2
+test/ubfc_phys/s4/s4/vid_s4_T1.avi,81.7,,rest,ubfc_phys:ubfc_phys\s4\s4:T1

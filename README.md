@@ -283,24 +283,42 @@ python scripts/validate_dataset.py --manifest manifest.csv --skip-synthetic
 
 | Metric | Value |
 | :--- | :--- |
-| Overall MAE | **17.4 BPM** (n=56) |
-| Overall RMSE | 24.1 BPM |
-| Status | CONSUMER GRADE (MAE ≥ 8 BPM) |
+| Overall MAE | **8.7 BPM** (n=56) |
+| Overall RMSE | 15.8 BPM |
+| Status | CONSUMER GRADE overall (MAE ≥ 8 BPM) — **UBFC-rPPG subset alone (n=41) is 7.8 BPM, crossing into RESEARCH GRADE** |
 
-**Stratified by condition** (this is the breakdown the earlier 18-subject run couldn't produce — UBFC-rPPG alone doesn't have labeled sub-conditions, UBFC-Phys does):
+**Stratified by condition:**
 
 | Condition | MAE | n |
 | :--- | :--- | :--- |
-| Speech (talking) | **26.6 BPM** (worst) | 5 |
-| Arithmetic (mental stress) | 19.2 BPM | 5 |
-| Rest | 19.2 BPM | 5 |
-| UBFC-rPPG baseline (unlabeled) | 15.8 BPM (best) | 41 |
+| Speech (talking) | **23.4 BPM** (worst — untouched by either fix below, see why) | 5 |
+| Rest | 6.5 BPM | 5 |
+| Arithmetic (mental stress) | 3.5 BPM | 5 |
+| UBFC-rPPG baseline (unlabeled) | 7.8 BPM | 41 |
 
-Accuracy measurably degrades under speech specifically, not just generic motion or stress — consistent with the rPPG literature (mouth movement disrupts the pulsatile signal) and now backed by this project's own stratified data rather than a citation alone. This is a genuinely useful, publishable-shape finding.
+Speech staying flat while Rest/Arithmetic improved dramatically (from a prior pass of 18.4/12.7) is itself informative, not a failure — it confirms the speech-condition gap is really about mouth movement disrupting the pulsatile signal, not the two bugs fixed below (neither of which had anything to do with talking).
 
-**The harmonic-ambiguity failure mode reproduces across all three independent datasets** (UBFC-rPPG, UBFC-Phys, and a third, described next) — not a one-dataset artifact. In this 56-session set, 8+ subjects land at the same ~0.44-0.61× ratio pattern first found on `test/dataset_2/subject41` (which reproduces at the same ~0.478× ratio here), plus a UBFC-Phys speech session at ~1.8×. Root-caused via a frame-by-frame trace: the pipeline genuinely finds the correct rate for a multi-second stretch mid-recording, then slides into a false ~half-rate lock for the majority of the clip — and because `get_final_summary()` takes a history median, whichever state occupies more total frames wins, discarding the correct stretch as a statistical minority.
+**A second, unrelated bug found the same way as the first — by tracing an individual failing subject instead of guessing.** `test/dataset_2/subject25` showed a *completely different* failure signature from subject41: rock-stable, high-confidence, wrong the entire clip (not oscillating between two states). Checking its actual video file found the cause: it's recorded at **23.2 fps**, but every `AdvancedRPPG` construction site in this codebase hardcoded `fps=30` regardless of the source's real frame rate. Analyzing a 23.2fps video as if it were 30fps deterministically scales every frequency by (30/23.2 ≈ 1.29×) — 91.5 real bpm × 1.29 ≈ 118, matching the observed error almost exactly. Fixed by reading the actual FPS from the video file (`Camera.get_source_fps()`, `core/camera.py`) and using it everywhere an `AdvancedRPPG` engine is constructed — both the file-analysis path (`scripts/analyze_video.py`) and the live-webcam path (`web/routes.py::_reset`). Verified immediately on the two known-affected subjects: `subject25` 23.5→**3.5** BPM error, `subject26` 25.5→**2.5** BPM error.
 
-**What was tried and what actually happened** (documented honestly rather than glossed over): a debounced BPM lock/candidate state machine (`AdvancedRPPG._resolve_bpm_lock`, `core/rppg.py`) was added, requiring sustained multi-frame agreement — much more for candidates that look like a ~0.5×/2× harmonic of the current lock — before the tracker or its adaptive filter recenter on a new frequency. Verified via trace to work exactly as designed (correctly resolves real transient noise, correctly holds through the genuine mid-recording correct stretch), and verified to **not regress** the synthetic self-test above (still 0.29 BPM MAE). But it produced **no aggregate improvement** on real data — because the false lock isn't noise-driven flip-flopping (which hysteresis fixes), it's a **sustained, stable, spectrally-genuine** subharmonic dominance for a majority of those clips' duration. Hysteresis can't distinguish two candidates that are each individually stable and confident; that requires resolving *which frequency is the true fundamental*, a harder and only partially-solved problem in the rPPG literature (published CHROM/POS/ICA-based methods document comparable failure cases; robust solutions generally need heavier machinery — HMM/Viterbi temporal models or learned rate estimators — than a bandpass-and-peak-pick pipeline). **This remains an open, honestly-documented limitation, not a fixed one — now confirmed to generalize across independent datasets rather than being one dataset's quirk.**
+Combined effect of both fixes across all 56 sessions: **MAE 17.4 → 11.4 → 8.7 BPM (50% total reduction)**, RMSE 24.1 → 18.1 → 15.8.
+
+**The harmonic-ambiguity bug — root-caused, then genuinely (partially) fixed.** First found on `test/dataset_2/subject41`: the CHROM peak-picker was locking onto a spurious frequency at roughly half or double the true heart rate for sustained multi-second stretches, reproduced identically across three independent datasets (UBFC-rPPG, UBFC-Phys, rPPG-10 below).
+
+*Two earlier fix attempts genuinely failed and are kept in the code history/comments rather than erased, because that's real information:*
+1. A debounced BPM lock/candidate hysteresis (`AdvancedRPPG._resolve_bpm_lock`) — verified to work exactly as designed via trace, but produced **no aggregate improvement**, because the false lock isn't noise-driven flip-flopping, it's sustained and spectrally confident.
+2. A naive upward-summing Harmonic Product Spectrum — verified via trace to also produce **no change**, and reasoned through why: for a signal locked at half the true rate, the true signal's own energy sits exactly where that candidate's "2nd harmonic" would be, so naive HPS reads it as supporting evidence *for* the wrong candidate rather than against it. Wrong tool for this specific failure direction.
+
+*What actually worked*: an asymmetric subharmonic-promotion check (`_select_dominant_freq_hps` in `core/rppg.py`, despite the name — see its docstring) — for the top raw candidate frequency, explicitly check whether its **double** has comparable-or-greater spectral power; if so, promote to the double instead of trusting the raw peak. This targets the specific, evidenced failure direction (undershooting to ~half-rate) rather than a generic harmonic-support heuristic. Measured effect across all 56 real sessions:
+
+| Subject | Before | After |
+| :--- | :--- | :--- |
+| subject41 | 52.6 | **8.2** |
+| subject46 | 41.2 | **1.3** |
+| subject49 | 36.5 | **0.4** |
+| subject9 | 60.9 | **2.8** |
+| subject34 | 63.0 | **0.5** |
+
+**Honest downside — the subharmonic-promotion fix is not a universal win, even after the FPS fix recovered some of its casualties.** The FPS fix incidentally fixed one subharmonic-fix regression outright (UBFC-Phys `s4` rest: was 15.9 pre-fixes, 43.3 after subharmonic-promotion alone, 3.7 with both fixes — it turned out to also be a non-30fps video). But several sessions remain worse than the original, pre-any-fix baseline: `dataset_1/after-exercise` (11.0→32.9), `subject22` (41.0→46.8), `subject24` (5.9→20.4), `subject32` (6.0→19.3), `subject37` (4.8→21.0), and UBFC-Phys `s4` speech (9.6→22.5) — promoting to double the rate helps when the lock was genuinely a half-rate error, but occasionally misfires on a session that was already tracking correctly. Net effect across all 56 sessions is unambiguously positive (50% MAE reduction overall, combined with the FPS fix), but treat this as "meaningfully improved," not "solved" — these specific regressions are real, open, and not yet root-caused the way subject41/subject25 were.
 
 No skin-tone stratification exists yet — none of the three datasets used ship per-subject Fitzpatrick metadata (rPPG-10 does, but see below for why it can't run through this pipeline). The Fitzpatrick-inclusivity design goal stated earlier in this README remains unvalidated, not disproven — it just hasn't been tested.
 
