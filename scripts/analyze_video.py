@@ -5,6 +5,7 @@ Processes entire video and returns final vital signs
 """
 import sys
 import os
+import statistics
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import cv2
@@ -12,12 +13,57 @@ import numpy as np
 from core.rppg import AdvancedRPPG
 from core.camera import Camera
 
-def analyze_video_complete(video_path, process_stride: int = 1):
+# Correction-model feature order must match scripts/build_ml_dataset.py's
+# FEATURE_COLUMNS exactly — the model has no idea what a column "means", it
+# was trained on this exact positional order.
+_CORRECTION_FEATURE_ORDER = [
+    "bpm", "sqi", "snr_db", "stability_score", "rr", "rr_confidence",
+    "hrv", "stress_index", "filt_low", "filt_high",
+]
+_correction_model_cache = {}
+
+
+def _load_correction_model(path):
+    """Lazily load + cache a joblib-serialized correction model (see
+    scripts/train_correction_model.py --save-final). Cached at module level
+    so a batch validation run over many videos doesn't reload it per file."""
+    if path not in _correction_model_cache:
+        import joblib
+        _correction_model_cache[path] = joblib.load(path)
+    return _correction_model_cache[path]
+
+
+def _median_iqr_filtered(values):
+    """Same median + 1.5xIQR outlier-exclusion approach as
+    AdvancedRPPG.get_final_summary(), applied here to the ML-corrected
+    per-cycle readings instead — kept as a local, separate implementation
+    rather than modifying core/rppg.py again, since this is an experimental
+    correction layer bolted onto the validated core, not a change to it."""
+    if not values:
+        return None
+    median_val = statistics.median(values)
+    sorted_v = sorted(values)
+    n = len(sorted_v)
+    q1, q3 = sorted_v[n // 4], sorted_v[(3 * n) // 4]
+    iqr = q3 - q1
+    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    filtered = [v for v in sorted_v if lo <= v <= hi] or sorted_v
+    return statistics.median(filtered)
+
+
+def analyze_video_complete(video_path, process_stride: int = 1, correction_model_path: str = None):
     """
     Analyze complete video and return final results
 
     Args:
         video_path: path to the video file.
+        correction_model_path: optional path to a joblib-serialized ML
+            correction model (see scripts/train_correction_model.py
+            --save-final). When given, each cycle's classical DSP output is
+            corrected by the model before being folded into the session
+            final_bpm, and the result dict gains 'final_bpm_classical' /
+            'final_bpm_corrected' so both can be compared honestly rather
+            than silently replacing one with the other.
         process_stride: run the full DSP pipeline (Welch PSD + cubic-spline
             HRV — the expensive parts of process_ppg_signal()) only every
             Nth frame instead of every single frame. `add_frame()` still
@@ -68,6 +114,9 @@ def analyze_video_complete(video_path, process_stride: int = 1):
 
     frame_count = 0
     bpm_readings = []
+    corrected_readings = []  # only populated when correction_model_path is given
+
+    correction_bundle = _load_correction_model(correction_model_path) if correction_model_path else None
 
     # Second line of defence: an absolute frame cap. Even a genuinely long
     # video shouldn't need more than this (100,000 frames is ~55min @ 30fps,
@@ -121,6 +170,22 @@ def analyze_video_complete(video_path, process_stride: int = 1):
                     'stress_index': result.get('stress_index', 0.0),
                     'frame': frame_count,
                 })
+
+                if correction_bundle is not None and result.get('sqi', 0) > 15:
+                    filt_band = result.get('filter_band_hz', [0.0, 0.0])
+                    feat_row = [
+                        result['bpm'], result.get('sqi', 0.0), result.get('snr_db', 0.0),
+                        result.get('stability_score', 0.0), result.get('rr', 0.0),
+                        result.get('rr_confidence', 0.0), result.get('hrv', 0.0),
+                        result.get('stress_index', 0.0), filt_band[0], filt_band[1],
+                    ]
+                    feat_arr = np.array([feat_row])
+                    scaler = correction_bundle.get("scaler")
+                    if scaler is not None:
+                        feat_arr = scaler.transform(feat_arr)
+                    corrected_bpm = float(correction_bundle["model"].predict(feat_arr)[0])
+                    if 40.0 <= corrected_bpm <= 180.0:
+                        corrected_readings.append(corrected_bpm)
 
         frame_count += 1
         if frame_count % 30 == 0:
@@ -176,7 +241,7 @@ def analyze_video_complete(video_path, process_stride: int = 1):
         final_hrv = round(float(np.mean(hrv_valid)), 1) if hrv_valid else 0.0
         final_stress = round(float(np.mean(stress_valid)), 1) if stress_valid else 0.0
 
-        return {
+        result_dict = {
             'success': True,
             'bpm': round(final_bpm, 1),
             'confidence': round(final_confidence, 1),
@@ -191,6 +256,19 @@ def analyze_video_complete(video_path, process_stride: int = 1):
             'valid_readings': len(bpm_readings),
             'mode': 'FACE'
         }
+
+        # Reported alongside, never in place of, the classical 'bpm' above —
+        # this is an experimental correction layer being A/B compared against
+        # the validated classical pipeline, not a silent replacement of it.
+        if correction_bundle is not None:
+            corrected_final = _median_iqr_filtered(corrected_readings)
+            result_dict['final_bpm_classical'] = round(final_bpm, 1)
+            result_dict['final_bpm_corrected'] = (
+                round(corrected_final, 1) if corrected_final is not None else None
+            )
+            result_dict['corrected_readings_count'] = len(corrected_readings)
+
+        return result_dict
     else:
         return {
             'success': False,

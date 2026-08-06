@@ -35,3 +35,11 @@ test/*.mov
 test/*.npy
 test/*.zip
 !test/*.log
+
+# Ignore the windowed ML-correction dataset (41MB, fully reproducible via
+# `python scripts/build_ml_dataset.py test/ --out test/ml_dataset.csv`
+# against the real videos above) — same reasoning as the raw datasets:
+# derived, regenerable, too big for git. The trained models it produced
+# (models/) and the logs proving what it measured (test/*.log) are the
+# actual evidence and are kept.
+test/ml_dataset.csv

@@ -1,0 +1,58 @@
+Loaded 242026 rows, 51 unique subjects, 3 dataset groups
+group
+dataset_1      3296
+dataset_2     72118
+ubfc_phys    166612
+dtype: int64
+
+Fold 1/5  (held-out subjects: ['after-exercise', 's3', 's33', 'subject1', 'subject13']..., n=48591 rows)
+  Classical DSP (no correction) : MAE= 17.25  RMSE= 26.58
+  + mlp_small                    : MAE= 11.32  RMSE= 15.98
+  + mlp_big_reg                  : MAE= 11.64  RMSE= 16.64
+  + gbr_small                    : MAE= 11.65  RMSE= 15.99
+  + gbr_big_reg                  : MAE= 11.40  RMSE= 15.94
+  + ensemble_big (mlp+gbr)      : MAE= 11.34  RMSE= 16.13
+
+Fold 2/5  (held-out subjects: ['s11', 's5', 'subject22', 'subject25', 'subject3']..., n=47824 rows)
+  Classical DSP (no correction) : MAE= 13.75  RMSE= 21.71
+  + mlp_small                    : MAE=  8.22  RMSE= 11.70
+  + mlp_big_reg                  : MAE=  8.60  RMSE= 12.18
+  + gbr_small                    : MAE=  7.43  RMSE= 10.24
+  + gbr_big_reg                  : MAE=  7.31  RMSE= 10.21
+  + ensemble_big (mlp+gbr)      : MAE=  7.67  RMSE= 10.77
+
+Fold 3/5  (held-out subjects: ['s1', 's7', 'subject24', 'subject27', 'subject37']..., n=48591 rows)
+  Classical DSP (no correction) : MAE= 10.37  RMSE= 15.00
+  + mlp_small                    : MAE=  8.64  RMSE= 11.39
+  + mlp_big_reg                  : MAE=  8.68  RMSE= 11.55
+  + gbr_small                    : MAE=  8.02  RMSE= 10.18
+  + gbr_big_reg                  : MAE=  8.07  RMSE= 10.58
+  + ensemble_big (mlp+gbr)      : MAE=  8.22  RMSE= 10.82
+
+Fold 4/5  (held-out subjects: ['s16', 's4', 'subject10', 'subject14', 'subject15']..., n=48507 rows)
+  Classical DSP (no correction) : MAE= 13.44  RMSE= 19.91
+  + mlp_small                    : MAE=  7.61  RMSE= 10.39
+  + mlp_big_reg                  : MAE=  7.82  RMSE= 10.65
+  + gbr_small                    : MAE=  6.88  RMSE=  9.35
+  + gbr_big_reg                  : MAE=  7.00  RMSE=  9.59
+  + ensemble_big (mlp+gbr)      : MAE=  7.23  RMSE=  9.87
+
+Fold 5/5  (held-out subjects: ['s2', 's6', 'subject11', 'subject12', 'subject31']..., n=48513 rows)
+  Classical DSP (no correction) : MAE= 14.36  RMSE= 21.72
+  + mlp_small                    : MAE= 10.09  RMSE= 13.50
+  + mlp_big_reg                  : MAE= 10.14  RMSE= 13.75
+  + gbr_small                    : MAE=  9.98  RMSE= 13.07
+  + gbr_big_reg                  : MAE= 10.03  RMSE= 13.37
+  + ensemble_big (mlp+gbr)      : MAE=  9.88  RMSE= 13.20
+
+======================================================================
+OVERALL (pooled across 5 subject-grouped folds, 242026 rows)
+======================================================================
+  Classical DSP (no correction) : MAE= 13.83  RMSE= 21.31
+  + mlp_small                    : MAE=  9.18  RMSE= 12.75
+  + mlp_big_reg                  : MAE=  9.38  RMSE= 13.13
+  + gbr_small                    : MAE=  8.80  RMSE= 12.03
+  + gbr_big_reg                  : MAE=  8.77  RMSE= 12.18
+  + ensemble_big                 : MAE=  8.87  RMSE= 12.37
+
+All numbers are on HELD-OUT subjects never seen during training (GroupKFold by subject_id).
