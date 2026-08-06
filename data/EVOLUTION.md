@@ -36,6 +36,17 @@ each ends with a link to the next:
     that worked on its target but silently broke the project's most-cited
     result; what that revealed; the corrected, verified fix. MAE 8.7 → 8.4
     BPM, 52% total reduction across the whole debugging thread.
+11. [10 — Testing Whether Bigger Helps](evolution/10-bigger-models-dont-help.md)
+    — a hybrid classical-DSP + ML correction layer (8.4 → 6.5 BPM session
+    MAE, and the speech-condition gap that DSP fixes never touched: 23.4 →
+    9.4), then an honest test of whether a bigger model does even better.
+    It doesn't — verified, not assumed, and explained by the real
+    constraint (51 subjects, not 242K rows).
+12. [11 — Finding 5 Subjects That Were Already There](evolution/11-more-subjects.md)
+    — "56" was sessions, not people; 5 more UBFC-Phys subjects were
+    already on disk and unused. Expanding to 71 real sessions widened the
+    hybrid model's advantage (23% → 29% relative MAE reduction) rather
+    than narrowing it.
 
 Nothing here is invented after the fact — this is what actually happened,
 including the mistakes. Every claim in each chapter points at the actual

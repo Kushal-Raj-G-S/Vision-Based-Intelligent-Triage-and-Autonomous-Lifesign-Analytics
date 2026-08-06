@@ -1,0 +1,16 @@
+video,gt_bpm,skin_tone,motion,notes
+test/ubfc_phys/s1/s1/vid_s1_T1.avi,83.5,,rest,ubfc_phys:ubfc_phys\s1\s1:T1
+test/ubfc_phys/s1/s1/vid_s1_T2.avi,81.7,,speech,ubfc_phys:ubfc_phys\s1\s1:T2
+test/ubfc_phys/s1/s1/vid_s1_T3.avi,76.8,,arithmetic,ubfc_phys:ubfc_phys\s1\s1:T3
+test/ubfc_phys/s2/s2/vid_s2_T1.avi,61.0,,rest,ubfc_phys:ubfc_phys\s2\s2:T1
+test/ubfc_phys/s2/s2/vid_s2_T2.avi,76.8,,speech,ubfc_phys:ubfc_phys\s2\s2:T2
+test/ubfc_phys/s2/s2/vid_s2_T3.avi,76.8,,arithmetic,ubfc_phys:ubfc_phys\s2\s2:T3
+test/ubfc_phys/s3/s3/vid_s3_T1.avi,87.3,,rest,ubfc_phys:ubfc_phys\s3\s3:T1
+test/ubfc_phys/s3/s3/vid_s3_T2.avi,101.1,,speech,ubfc_phys:ubfc_phys\s3\s3:T2
+test/ubfc_phys/s3/s3/vid_s3_T3.avi,101.1,,arithmetic,ubfc_phys:ubfc_phys\s3\s3:T3
+test/ubfc_phys/s5/s5/vid_s5_T1.avi,87.3,,rest,ubfc_phys:ubfc_phys\s5\s5:T1
+test/ubfc_phys/s5/s5/vid_s5_T2.avi,85.3,,speech,ubfc_phys:ubfc_phys\s5\s5:T2
+test/ubfc_phys/s5/s5/vid_s5_T3.avi,80.0,,arithmetic,ubfc_phys:ubfc_phys\s5\s5:T3
+test/ubfc_phys/s6/s6/vid_s6_T1.avi,91.4,,rest,ubfc_phys:ubfc_phys\s6\s6:T1
+test/ubfc_phys/s6/s6/vid_s6_T2.avi,87.3,,speech,ubfc_phys:ubfc_phys\s6\s6:T2
+test/ubfc_phys/s6/s6/vid_s6_T3.avi,101.1,,arithmetic,ubfc_phys:ubfc_phys\s6\s6:T3

@@ -346,7 +346,69 @@ Worse than the full-pipeline number above, on lower-resolution, more heavily com
 
 **Performance note**: these are 10-minute clips (18,000 frames); the DSP core originally re-ran a full Welch FFT + cubic-spline HRV fit on every single frame, which took over 13 minutes with zero results for even one subject. `analyze_video_complete()` and the cropped-ROI script now support a `process_stride` (skip N-1 of every N expensive recomputations while still buffering every frame) — cut this specific run from an hours-long trajectory to ~10 minutes total. The live product path keeps `process_stride=1` (unchanged, real-time frame-by-frame updates); only batch validation over long clips uses a higher stride.
 
-### 4. Agent narration faithfulness — does the LLM layer actually do what it's told?
+### 4. Hybrid classical-DSP + ML correction layer
+
+Sections 1-3 above are all pure classical signal processing (CHROM/POS) —
+fixed equations, no learning. `scripts/build_ml_dataset.py`,
+`scripts/train_correction_model.py`, and `scripts/validate_with_correction.py`
+add a second stage on top: a small gradient-boosted model trained to
+correct the classical pipeline's output, using dense per-frame/near-per-
+frame ground truth (not just one scalar BPM per session) extracted from
+the same real UBFC-rPPG/UBFC-Phys videos — 242,026 labeled cycles across
+71 real sessions (46→**56** unique people once 5 already-downloaded but
+unused UBFC-Phys subjects were found and added).
+
+```bash
+python scripts/build_ml_dataset.py test/ --out test/ml_dataset.csv
+python scripts/train_correction_model.py test/ml_dataset.csv --folds 5 --save-fold-models models/cv_folds
+python scripts/validate_with_correction.py test/manifest.csv models/cv_folds
+```
+
+**The one rule that makes this honest**: every number below is measured
+with the model corrected by evaluated **only on subjects it never trained
+on** (`GroupKFold` by `subject_id`, and session-level validation using a
+model trained on the *other* folds for each specific subject — see
+`models/cv_folds/`). A model trained on all 71 people and then evaluated
+on those same 71 people would be measuring memorization, not accuracy.
+
+| | MAE | RMSE |
+| :--- | :--- | :--- |
+| Classical DSP only (sections 1-3) | 9.43 BPM | 16.51 |
+| **Hybrid (DSP + ML correction)** | **6.65 BPM** | **9.66** |
+
+Per-condition, the correction model's biggest win is exactly the failure
+mode three rounds of DSP-level fixes never touched:
+
+| Condition | Classical | Hybrid |
+| :--- | :--- | :--- |
+| Speech (talking) | 23.4 (worst, untouched by every DSP fix above) | **9.4** |
+| UBFC-rPPG (unlabeled) | 7.4 | 6.2 |
+| Rest | 6.5 | 7.3 (slightly worse) |
+| Arithmetic | 3.5 | 4.9 (slightly worse) |
+
+**Honest, not a free lunch**: the model measurably helps the hard cases
+(speech's motion artifact) and slightly *hurts* the already-clean ones
+(rest, arithmetic) — it's correcting for bias patterns that aren't
+present there. Net effect across all 71 sessions is unambiguously
+positive (both MAE and RMSE improve), but every group's number is
+reported here, not just the aggregate.
+
+**Bigger models were tested and did not win** — a larger, more heavily
+regularized neural net, a larger gradient-boosted model, and an ensemble
+of both were compared the same GroupKFold way against the small deployed
+model. None beat it; the neural net was measurably worse. The real
+constraint is 56 unique people, not the 242,026 rows — a small model
+already extracts most of what that many people can teach it. Full story,
+including the real per-fold numbers and a computational trap caught by
+timing small samples before committing to a multi-hour run:
+[`data/evolution/10-bigger-models-dont-help.md`](data/evolution/10-bigger-models-dont-help.md).
+
+Adding 5 already-downloaded-but-unused UBFC-Phys subjects (46→56 people,
+56→71 sessions) *widened* the hybrid model's advantage rather than
+narrowing it — full story:
+[`data/evolution/11-more-subjects.md`](data/evolution/11-more-subjects.md).
+
+### 5. Agent narration faithfulness — does the LLM layer actually do what it's told?
 
 Everything above validates the rPPG **signal** pipeline. None of it says anything about whether the multi-agent LLM layer (`agents/`) actually behaves as instructed — specifically, whether the Diagnostic/Coordinator agents faithfully **restate** the deterministic `core/clinical.py` assessment, or drift/hallucinate a different number, despite `agents/config/tasks.yaml` explicitly instructing them to restate exact given values and nothing else.
 

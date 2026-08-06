@@ -1,0 +1,29 @@
+Loaded 5 fold models from models/cv_folds
+Covering 51 unique subjects across all folds
+
+====================================================================================================
+SESSION-LEVEL VALIDATION — CLASSICAL DSP vs. HYBRID (out-of-fold ML correction)
+====================================================================================================
+Video                      | GT      | Classical  | C.Err   | Corrected  | Cr.Err  | Group       
+----------------------------------------------------------------------------------------------------
+[20:19:43] Processing test/ubfc_phys/s5/s5/vid_s5_T1.avi...
+test/ubfc_phys/s5/s5/vid   | 87.3    | 85.0       | 2.3     | 83.9       | 3.4     | rest        
+[20:26:48] Processing test/ubfc_phys/s5/s5/vid_s5_T2.avi...
+test/ubfc_phys/s5/s5/vid   | 85.3    | 65.0       | 20.3    | 83.1       | 2.2     | speech      
+[20:34:59] Processing test/ubfc_phys/s5/s5/vid_s5_T3.avi...
+test/ubfc_phys/s5/s5/vid   | 80.0    | 57.0       | 23.0    | 84.1       | 4.1     | arithmetic  
+[20:47:47] Processing test/ubfc_phys/s6/s6/vid_s6_T1.avi...
+test/ubfc_phys/s6/s6/vid   | 91.4    | 91.0       | 0.4     | 87.8       | 3.6     | rest        
+[20:53:44] Processing test/ubfc_phys/s6/s6/vid_s6_T2.avi...
+test/ubfc_phys/s6/s6/vid   | 87.3    | 89.0       | 1.7     | 88.3       | 1.0     | speech      
+[20:58:36] Processing test/ubfc_phys/s6/s6/vid_s6_T3.avi...
+test/ubfc_phys/s6/s6/vid   | 101.1   | 57.0       | 44.1    | 86.9       | 14.2    | arithmetic  
+----------------------------------------------------------------------------------------------------
+Classical DSP        MAE: 15.30 BPM   RMSE: 21.96 BPM   (n=6)
+Hybrid (out-of-fold) MAE: 4.75 BPM   RMSE: 6.44 BPM   (n=6)
+
+Per-group breakdown:
+  arithmetic     classical=33.55    corrected=9.15     (n=2)
+  rest           classical=1.35     corrected=3.50     (n=2)
+  speech         classical=11.00    corrected=1.60     (n=2)
+====================================================================================================
