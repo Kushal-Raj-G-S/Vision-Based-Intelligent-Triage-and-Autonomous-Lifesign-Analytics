@@ -374,23 +374,29 @@ on those same 71 people would be measuring memorization, not accuracy.
 | | MAE | RMSE |
 | :--- | :--- | :--- |
 | Classical DSP only (sections 1-3) | 9.43 BPM | 16.51 |
-| **Hybrid (DSP + ML correction)** | **6.65 BPM** | **9.66** |
+| **Hybrid (DSP + ML correction)** | **6.48 BPM** | **9.66** |
+
+(The correction model uses Huber loss, not squared-error — measured to be
+a small but real improvement over squared-error at both the per-cycle
+level, 8.80→8.67 MAE, and the session level, 6.65→6.48 MAE, on held-out
+subjects either way. Squared-error over-weights a handful of extreme-
+outlier sessions; Huber is more robust to them. See
+[`data/evolution/12-huber-loss.md`](data/evolution/12-huber-loss.md).)
 
 Per-condition, the correction model's biggest win is exactly the failure
 mode three rounds of DSP-level fixes never touched:
 
-| Condition | Classical | Hybrid |
-| :--- | :--- | :--- |
-| Speech (talking) | 23.4 (worst, untouched by every DSP fix above) | **9.4** |
-| UBFC-rPPG (unlabeled) | 7.4 | 6.2 |
-| Rest | 6.5 | 7.3 (slightly worse) |
-| Arithmetic | 3.5 | 4.9 (slightly worse) |
+| Condition | Classical | Hybrid | n |
+| :--- | :--- | :--- | :--- |
+| Speech (talking) | 21.0 (worst, untouched by every DSP fix above) | **7.8** | 10 |
+| Arithmetic | 10.4 | **7.0** | 10 |
+| UBFC-rPPG (unlabeled) | 7.4 | 6.1 | 41 |
+| Rest | 5.1 | 6.1 (slightly worse) | 10 |
 
-**Honest, not a free lunch**: the model measurably helps the hard cases
-(speech's motion artifact) and slightly *hurts* the already-clean ones
-(rest, arithmetic) — it's correcting for bias patterns that aren't
-present there. Net effect across all 71 sessions is unambiguously
-positive (both MAE and RMSE improve), but every group's number is
+**Honest, not a free lunch**: the model helps every condition except
+already-clean "rest," where it's correcting for bias patterns that aren't
+present. Net effect across all 71 sessions is unambiguously positive
+(both MAE and RMSE improve), but every group's number is
 reported here, not just the aggregate.
 
 **Bigger models were tested and did not win** — a larger, more heavily

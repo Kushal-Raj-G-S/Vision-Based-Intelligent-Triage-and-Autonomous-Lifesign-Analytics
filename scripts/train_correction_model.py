@@ -73,6 +73,15 @@ def _build_models():
         "gbr_small": lambda: GradientBoostingRegressor(
             n_estimators=200, max_depth=3, learning_rate=0.05, random_state=42,
         ),
+        "gbr_huber": lambda: GradientBoostingRegressor(
+            # Same size as gbr_small — only the loss function differs.
+            # Measured (not guessed): squared-error MAE=8.80, huber MAE=8.67
+            # at the per-cycle level (GroupKFold, held-out subjects) — a
+            # small, real, verified win. Huber is less dominated by a
+            # handful of extreme-outlier sessions than squared-error is.
+            n_estimators=200, max_depth=3, learning_rate=0.05,
+            loss="huber", alpha=0.9, random_state=42,
+        ),
         "gbr_big_reg": lambda: GradientBoostingRegressor(
             n_estimators=600, max_depth=5, learning_rate=0.03,
             subsample=0.7,          # stochastic gradient boosting — each tree sees 70% of rows, reduces overfitting
@@ -82,7 +91,7 @@ def _build_models():
     }
 
 
-def main(csv_path, n_folds=5, save_fold_models_dir=None, save_fold_model_name="gbr_small"):
+def main(csv_path, n_folds=5, save_fold_models_dir=None, save_fold_model_name="gbr_small", only_models=None):
     df = pd.read_csv(csv_path)
     df = df.dropna(subset=FEATURE_COLUMNS + ["gt_hr", "subject_id"])
     print(f"Loaded {len(df)} rows, {df['subject_id'].nunique()} unique subjects, "
@@ -99,9 +108,13 @@ def main(csv_path, n_folds=5, save_fold_models_dir=None, save_fold_model_name="g
     gkf = GroupKFold(n_splits=n_folds)
 
     model_builders = _build_models()
+    if only_models:
+        model_builders = {name: b for name, b in model_builders.items() if name in only_models}
+    run_ensemble = "mlp_big_reg" in model_builders and "gbr_big_reg" in model_builders
     all_err = {name: [] for name in model_builders}
     all_err["baseline"] = []
-    all_err["ensemble_big"] = []
+    if run_ensemble:
+        all_err["ensemble_big"] = []
 
     fold_i = 0
     for train_idx, test_idx in gkf.split(X, y, groups):
@@ -153,12 +166,14 @@ def main(csv_path, n_folds=5, save_fold_models_dir=None, save_fold_model_name="g
         # biggest/most-regularized models. No meta-learner fit on this fold's
         # own predictions (that would need its own inner CV to stay honest);
         # a plain average is the safe, leakage-free way to combine them.
-        preds["ensemble_big"] = 0.5 * preds["mlp_big_reg"] + 0.5 * preds["gbr_big_reg"]
+        if run_ensemble:
+            preds["ensemble_big"] = 0.5 * preds["mlp_big_reg"] + 0.5 * preds["gbr_big_reg"]
 
         all_err["baseline"].extend(np.abs(base_test - y_test))
         for name in model_builders:
             all_err[name].extend(np.abs(preds[name] - y_test))
-        all_err["ensemble_big"].extend(np.abs(preds["ensemble_big"] - y_test))
+        if run_ensemble:
+            all_err["ensemble_big"].extend(np.abs(preds["ensemble_big"] - y_test))
 
         held_out_subjects = sorted(set(groups[test_idx]))
         print(f"\nFold {fold_i}/{n_folds}  (held-out subjects: {held_out_subjects[:5]}"
@@ -166,13 +181,15 @@ def main(csv_path, n_folds=5, save_fold_models_dir=None, save_fold_model_name="g
         print(f"  Classical DSP (no correction) : MAE={mae(base_test, y_test):6.2f}  RMSE={rmse(base_test, y_test):6.2f}")
         for name in model_builders:
             print(f"  + {name:<20}         : MAE={mae(preds[name], y_test):6.2f}  RMSE={rmse(preds[name], y_test):6.2f}")
-        print(f"  + ensemble_big (mlp+gbr)      : MAE={mae(preds['ensemble_big'], y_test):6.2f}  RMSE={rmse(preds['ensemble_big'], y_test):6.2f}")
+        if run_ensemble:
+            print(f"  + ensemble_big (mlp+gbr)      : MAE={mae(preds['ensemble_big'], y_test):6.2f}  RMSE={rmse(preds['ensemble_big'], y_test):6.2f}")
 
     print("\n" + "=" * 70)
     print(f"OVERALL (pooled across {n_folds} subject-grouped folds, {len(all_err['baseline'])} rows)")
     print("=" * 70)
     print(f"  Classical DSP (no correction) : MAE={np.mean(all_err['baseline']):6.2f}  RMSE={np.sqrt(np.mean(np.square(all_err['baseline']))):6.2f}")
-    for name in list(model_builders) + ["ensemble_big"]:
+    report_names = list(model_builders) + (["ensemble_big"] if run_ensemble else [])
+    for name in report_names:
         print(f"  + {name:<20}         : MAE={np.mean(all_err[name]):6.2f}  RMSE={np.sqrt(np.mean(np.square(all_err[name]))):6.2f}")
     print("\nAll numbers are on HELD-OUT subjects never seen during training (GroupKFold by subject_id).")
 
@@ -218,14 +235,19 @@ if __name__ == "__main__":
     parser.add_argument("--save-final", type=str, default=None,
                          help="Also train a final model on ALL data (no holdout) and save it here for deployment.")
     parser.add_argument("--final-model-name", type=str, default="gbr_small",
-                         choices=["mlp_small", "mlp_big_reg", "gbr_small", "gbr_big_reg"])
+                         choices=["mlp_small", "mlp_big_reg", "gbr_small", "gbr_big_reg", "gbr_huber"])
     parser.add_argument("--save-fold-models", type=str, default=None,
                          help="Save each fold's model (+ its held-out subject list) to this directory, "
                               "for honest out-of-fold session-level evaluation (see validate_with_correction.py).")
     parser.add_argument("--fold-model-name", type=str, default="gbr_small",
-                         choices=["mlp_small", "mlp_big_reg", "gbr_small", "gbr_big_reg"])
+                         choices=["mlp_small", "mlp_big_reg", "gbr_small", "gbr_big_reg", "gbr_huber"])
+    parser.add_argument("--only", type=str, default=None,
+                         help="Comma-separated subset of model names to train/compare this run "
+                              "(skips the rest entirely, e.g. to avoid re-confirming already-settled "
+                              "comparisons like mlp_big_reg/gbr_big_reg). Default: all.")
     args = parser.parse_args()
+    only_models = args.only.split(",") if args.only else None
     main(args.csv_path, n_folds=args.folds, save_fold_models_dir=args.save_fold_models,
-         save_fold_model_name=args.fold_model_name)
+         save_fold_model_name=args.fold_model_name, only_models=only_models)
     if args.save_final:
         train_final_model(args.csv_path, args.save_final, model_name=args.final_model_name)

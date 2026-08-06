@@ -47,6 +47,11 @@ each ends with a link to the next:
     already on disk and unused. Expanding to 71 real sessions widened the
     hybrid model's advantage (23% → 29% relative MAE reduction) rather
     than narrowing it.
+13. [12 — A Small, Honest Win: Huber Loss](evolution/12-huber-loss.md) —
+    testing whether the correction model's loss function (not size) had
+    room to improve; a real but modest win, tested cheaply first before
+    spending the ~4.5 hours to confirm it at the session level. Final
+    result: classical 9.43 → hybrid 6.48 BPM, 31% relative reduction.
 
 Nothing here is invented after the fact — this is what actually happened,
 including the mistakes. Every claim in each chapter points at the actual
