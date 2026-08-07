@@ -52,6 +52,14 @@ each ends with a link to the next:
     room to improve; a real but modest win, tested cheaply first before
     spending the ~4.5 hours to confirm it at the session level. Final
     result: classical 9.43 → hybrid 6.48 BPM, 31% relative reduction.
+14. [13 — Two Real Fixes, a Net Wash, and a Reverted Change](evolution/13-majority-vote-gate-reverted.md)
+    — tracing the last 4 unresolved classical regressions found at least 3
+    genuinely different bug classes. A majority-vote gate fix cleanly
+    resolved 2 of them (subject22, subject41) and was carefully verified
+    against every known protected case — but the full 71-session
+    validation showed a slightly *worse* aggregate classical MAE (9.43 →
+    9.54), so it was reverted rather than kept for a net-negative result.
+    Current numbers unchanged from Era 12.
 
 Nothing here is invented after the fact — this is what actually happened,
 including the mistakes. Every claim in each chapter points at the actual
