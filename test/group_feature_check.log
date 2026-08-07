@@ -1,0 +1,8 @@
+Loaded 242026 rows, 51 subjects, groups: ['dataset_1' 'dataset_2' 'ubfc_phys']
+fold 1  base_MAE=17.25  no_group_MAE=11.70  with_group_MAE=11.53
+fold 2  base_MAE=13.75  no_group_MAE=7.40  with_group_MAE=6.94
+fold 3  base_MAE=10.37  no_group_MAE=7.71  with_group_MAE=7.15
+fold 4  base_MAE=13.44  no_group_MAE=6.85  with_group_MAE=6.54
+fold 5  base_MAE=14.36  no_group_MAE=9.67  with_group_MAE=9.91
+
+OVERALL  baseline=13.83  no_group_feature=8.67  with_group_feature=8.42

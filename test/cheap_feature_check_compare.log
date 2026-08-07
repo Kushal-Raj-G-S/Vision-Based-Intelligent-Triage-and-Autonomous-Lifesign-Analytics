@@ -1,0 +1,21 @@
+Loaded 26169 rows, 8 subjects
+subject_id
+s1           6238
+s11          4548
+s4           6120
+subject1     1475
+subject22    1957
+subject32    1958
+subject37    1957
+subject41    1916
+dtype: int64
+fold 1 held_out=['s1']  base_MAE=16.77  old_MAE=11.07  new_MAE=10.28
+fold 2 held_out=['s4']  base_MAE=23.94  old_MAE=10.51  new_MAE=9.16
+fold 3 held_out=['s11']  base_MAE=11.04  old_MAE=9.24  new_MAE=8.01
+fold 4 held_out=['subject32']  base_MAE=16.71  old_MAE=9.27  new_MAE=8.45
+fold 5 held_out=['subject37']  base_MAE=5.17  old_MAE=24.35  new_MAE=40.51
+fold 6 held_out=['subject22']  base_MAE=20.09  old_MAE=10.01  new_MAE=9.05
+fold 7 held_out=['subject41']  base_MAE=27.26  old_MAE=12.23  new_MAE=12.88
+fold 8 held_out=['subject1']  base_MAE=4.53  old_MAE=5.83  new_MAE=5.97
+
+OVERALL  baseline=16.90  old_features=11.19  new_features=11.60

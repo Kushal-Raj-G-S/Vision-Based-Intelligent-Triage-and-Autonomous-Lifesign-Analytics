@@ -25,6 +25,32 @@ correction model on, honestly, IF the eventual train/test split is done
 by SUBJECT (not by row), since consecutive rows from the same session are
 highly correlated and would leak across a random split otherwise.
 
+Feature set v2 — adds signals the model previously never saw, each tied
+to a documented, real failure mode rather than added speculatively:
+  - harmonic_ratio: the top spectral candidate's 2x-companion power ratio,
+    already computed inside _select_dominant_freq_hps and previously
+    discarded once the promote/don't-promote decision was made. A high
+    ratio means THIS cycle is ambiguous between two candidates ~2x apart,
+    independent of which one the hand-written 0.55 threshold picked —
+    exactly the signature behind subject41's still-unresolved bimodality
+    (see data/evolution/13-majority-vote-gate-reverted.md).
+  - motion_delta: Camera's own frame-to-frame face-centroid drift, already
+    computed for the live is_moving flag and previously never reaching
+    the correction model at all — a direct, real-time motion-artifact
+    signal, relevant to the speech/after-exercise failure modes.
+  - pos_bpm / chrom_pos_disagreement: POS (Wang et al. 2017) is already
+    implemented in this codebase but unwired from the live product
+    (core/rppg.py's own docs note it has its own separate failure mode).
+    Running it alongside CHROM on the same frames gives the model a
+    second, independently-computed estimate — large disagreement between
+    the two is itself informative, and the literature comparison in this
+    project's README shows a CHROM+POS hybrid (ChPOS) beating either
+    alone (5.71 MAE vs 8.20/8.35).
+  - rolling_bpm_mean / rolling_bpm_std: temporal context. Every prior
+    feature describes ONE cycle in isolation; the model has never seen
+    whether the last several cycles have been stable or swinging wildly,
+    which is exactly what a human tracing a trace log looks at first.
+
 Output: a CSV with one row per DSP cycle, feature columns, gt_hr label,
 and a subject_id column for grouped cross-validation.
 
@@ -36,6 +62,7 @@ import csv
 import os
 import re
 import sys
+from collections import deque
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -50,7 +77,11 @@ _UBFC_PHYS_BVP_RE = re.compile(r"^bvp_(?P<subject>.+)_(?P<task>T\d+)\.csv$", re.
 FEATURE_COLUMNS = [
     "bpm", "sqi", "snr_db", "stability_score", "rr", "rr_confidence",
     "hrv", "stress_index", "filt_low", "filt_high",
+    "harmonic_ratio", "motion_delta", "pos_bpm", "chrom_pos_disagreement",
+    "rolling_bpm_mean", "rolling_bpm_std",
 ]
+
+_ROLLING_WINDOW = 30  # cycles (~1s @ 30fps) of recent CHROM bpm for temporal-context features
 
 
 def _instantaneous_bpm_from_bvp_window(values, fs, center_idx, half_window_sec=5.0,
@@ -106,68 +137,45 @@ def _load_dataset1_gt(path):
     return np.array(ts), np.array(hr)
 
 
-def _process_video_dense_gt(video_path, gt_timestamps_sec, gt_hr, subject_id, group, rows_out):
+def _process_video(video_path, gt_fn, subject_id, group, rows_out):
+    """
+    Shared extraction loop for both ground-truth sources (dense per-sample
+    HR, or windowed BVP peak-detection) — `gt_fn(t_sec)` returns the ground
+    truth HR at a given timestamp, or None if unavailable there.
+
+    Runs CHROM and POS side by side on the identical frame stream so the
+    model can see both algorithms' independent opinions per cycle.
+    """
     camera = Camera(source=video_path)
     if camera.dummy_mode:
         print(f"  [skip] could not open {video_path}")
         return 0
     fps = camera.get_source_fps(default=30.0)
-    rppg = AdvancedRPPG(fps=int(round(fps)), window_size=max(300, int(fps * 10)))
+    window_size = max(300, int(fps * 10))
+    rppg_chrom = AdvancedRPPG(fps=int(round(fps)), window_size=window_size, algorithm="CHROM")
+    rppg_pos = AdvancedRPPG(fps=int(round(fps)), window_size=window_size, algorithm="POS")
+    recent_bpm = deque(maxlen=_ROLLING_WINDOW)
 
     n_added = 0
     frame_idx = 0
     MAX_FRAMES = 100_000
     while frame_idx < MAX_FRAMES:
-        frame_bytes, roi_data, _is_moving, _motion = camera.get_frame()
+        frame_bytes, roi_data, _is_moving, motion_delta = camera.get_frame()
         if frame_bytes is None:
             break
         if roi_data is not None:
             r, g, b = roi_data
-            rppg.add_frame((r, g, b))
-            result = rppg.process_ppg_signal()
+            rppg_chrom.add_frame((r, g, b), motion_delta=motion_delta)
+            rppg_pos.add_frame((r, g, b))
+            result = rppg_chrom.process_ppg_signal()
+            pos_result = rppg_pos.process_ppg_signal()
+
             if result.get("ready") and result.get("bpm", 0) > 0:
+                recent_bpm.append(result["bpm"])
                 t_sec = frame_idx / fps
-                gt_now = float(np.interp(t_sec, gt_timestamps_sec, gt_hr))
-                if 40.0 <= gt_now <= 180.0:
-                    rows_out.append({
-                        "bpm": result["bpm"], "sqi": result.get("sqi", 0.0),
-                        "snr_db": result.get("snr_db", 0.0),
-                        "stability_score": result.get("stability_score", 0.0),
-                        "rr": result.get("rr", 0.0), "rr_confidence": result.get("rr_confidence", 0.0),
-                        "hrv": result.get("hrv", 0.0), "stress_index": result.get("stress_index", 0.0),
-                        "filt_low": result.get("filter_band_hz", [0, 0])[0],
-                        "filt_high": result.get("filter_band_hz", [0, 0])[1],
-                        "gt_hr": gt_now, "subject_id": subject_id, "group": group,
-                    })
-                    n_added += 1
-        frame_idx += 1
-    return n_added
-
-
-def _process_video_bvp_gt(video_path, bvp_values, bvp_fs, subject_id, group, rows_out):
-    camera = Camera(source=video_path)
-    if camera.dummy_mode:
-        print(f"  [skip] could not open {video_path}")
-        return 0
-    fps = camera.get_source_fps(default=30.0)
-    rppg = AdvancedRPPG(fps=int(round(fps)), window_size=max(300, int(fps * 10)))
-
-    n_added = 0
-    frame_idx = 0
-    MAX_FRAMES = 100_000
-    while frame_idx < MAX_FRAMES:
-        frame_bytes, roi_data, _is_moving, _motion = camera.get_frame()
-        if frame_bytes is None:
-            break
-        if roi_data is not None:
-            r, g, b = roi_data
-            rppg.add_frame((r, g, b))
-            result = rppg.process_ppg_signal()
-            if result.get("ready") and result.get("bpm", 0) > 0:
-                t_sec = frame_idx / fps
-                center_idx = int(t_sec * bvp_fs)
-                gt_now = _instantaneous_bpm_from_bvp_window(bvp_values, bvp_fs, center_idx)
+                gt_now = gt_fn(t_sec)
                 if gt_now is not None and 40.0 <= gt_now <= 180.0:
+                    pos_bpm = pos_result.get("bpm", 0.0) if pos_result.get("ready") else 0.0
                     rows_out.append({
                         "bpm": result["bpm"], "sqi": result.get("sqi", 0.0),
                         "snr_db": result.get("snr_db", 0.0),
@@ -176,6 +184,12 @@ def _process_video_bvp_gt(video_path, bvp_values, bvp_fs, subject_id, group, row
                         "hrv": result.get("hrv", 0.0), "stress_index": result.get("stress_index", 0.0),
                         "filt_low": result.get("filter_band_hz", [0, 0])[0],
                         "filt_high": result.get("filter_band_hz", [0, 0])[1],
+                        "harmonic_ratio": result.get("harmonic_ratio", 0.0),
+                        "motion_delta": result.get("motion_delta", 0.0),
+                        "pos_bpm": pos_bpm,
+                        "chrom_pos_disagreement": abs(result["bpm"] - pos_bpm) if pos_bpm > 0 else 0.0,
+                        "rolling_bpm_mean": float(np.mean(recent_bpm)),
+                        "rolling_bpm_std": float(np.std(recent_bpm)) if len(recent_bpm) > 1 else 0.0,
                         "gt_hr": gt_now, "subject_id": subject_id, "group": group,
                     })
                     n_added += 1
@@ -203,7 +217,8 @@ def build_dataset(root, out_path):
                 except Exception:
                     continue
                 print(f"Processing {video_path} (UBFC-Phys, windowed BVP ground truth)...")
-                n = _process_video_bvp_gt(video_path, bvp_values, 64.0, subject, "ubfc_phys", rows)
+                gt_fn = lambda t_sec, _v=bvp_values: _instantaneous_bpm_from_bvp_window(_v, 64.0, int(t_sec * 64.0))
+                n = _process_video(video_path, gt_fn, subject, "ubfc_phys", rows)
                 print(f"  -> {n} labeled cycles")
             continue
 
@@ -235,7 +250,8 @@ def build_dataset(root, out_path):
             continue
 
         print(f"Processing {video_path} ({gt_kind}, dense ground truth)...")
-        n = _process_video_dense_gt(video_path, ts, hr, subject_id, gt_kind, rows)
+        gt_fn = lambda t_sec, _ts=ts, _hr=hr: float(np.interp(t_sec, _ts, _hr))
+        n = _process_video(video_path, gt_fn, subject_id, gt_kind, rows)
         print(f"  -> {n} labeled cycles")
 
     with open(out_path, "w", newline="", encoding="utf-8") as f:

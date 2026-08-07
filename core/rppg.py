@@ -185,27 +185,42 @@ _SUBHARM_PROMOTE_RATIO = 0.55  # promote to 2x if that bin has >= 55% of the top
 _SUBHARM_TOL_HZ        = 0.08  # how close to exactly 2x a bin must land to count
 
 
-def _select_dominant_freq_hps(valid_freqs: np.ndarray, valid_psd: np.ndarray) -> tuple[float, int]:
+def _select_dominant_freq_hps(valid_freqs: np.ndarray, valid_psd: np.ndarray) -> tuple[float, int, float]:
     """
     Select the dominant frequency, checking for and correcting a specific
     subharmonic-lock signature: the raw top peak has a comparably-strong
-    companion at almost exactly double its frequency. Returns (frequency_hz,
-    bin_index). Name kept as `_hps` for call-site continuity even though the
-    technique is no longer classic HPS — see module comment above for why.
+    companion at almost exactly double its frequency. Returns
+    (frequency_hz, bin_index, harmonic_ratio). Name kept as `_hps` for
+    call-site continuity even though the technique is no longer classic
+    HPS — see module comment above for why.
+
+    harmonic_ratio (new) is the top candidate's 2x-companion power ratio
+    (valid_psd[2x bin] / valid_psd[top bin], 0.0 if no bin lands near 2x at
+    all) — previously computed here purely to decide promote-or-not and
+    then discarded. Exposed as a feature for the ML correction layer: a
+    high ratio is a direct, real-time signal that THIS cycle's estimate is
+    ambiguous between two candidates a factor of ~2 apart (whichever one
+    was picked), independent of whether the promotion heuristic itself
+    fired — the model can learn to distrust a reading with a high ratio
+    even in cases the hand-written 0.55 threshold doesn't cleanly resolve
+    (e.g. subject41's genuinely bimodal signal, still unresolved as of
+    Era 13 — see data/evolution/13-majority-vote-gate-reverted.md).
     """
     n = len(valid_psd)
     top_idx = int(np.argmax(valid_psd))
     if n < 3:
-        return float(valid_freqs[top_idx]), top_idx
+        return float(valid_freqs[top_idx]), top_idx, 0.0
 
     f0 = valid_freqs[top_idx]
     target = f0 * 2.0
     j = int(np.argmin(np.abs(valid_freqs - target)))
     if abs(valid_freqs[j] - target) <= _SUBHARM_TOL_HZ:
-        if valid_psd[j] >= _SUBHARM_PROMOTE_RATIO * valid_psd[top_idx]:
-            return float(valid_freqs[j]), j
+        ratio = float(valid_psd[j] / valid_psd[top_idx]) if valid_psd[top_idx] > 0 else 0.0
+        if ratio >= _SUBHARM_PROMOTE_RATIO:
+            return float(valid_freqs[j]), j, ratio
+        return float(f0), top_idx, ratio
 
-    return float(f0), top_idx
+    return float(f0), top_idx, 0.0
 
 
 # ── Utility ───────────────────────────────────────────────────────────────────
@@ -534,6 +549,7 @@ class AdvancedRPPG:
         self._prior_defer_count: int = 0
         self.bpm_history: list[float] = []
         self._history_reject_streak: int = 0
+        self._latest_motion_delta: float = 0.0
         self.frame_count: int = 0
 
         log.info(
@@ -548,8 +564,16 @@ class AdvancedRPPG:
         self.algorithm = Algorithm(algorithm.upper())
         log.info("Algorithm switched to %s", self.algorithm.value)
 
-    def add_frame(self, rgb: Optional[tuple], timestamp=None) -> None:
-        """Append one (r, g, b) sample to the ring buffers."""
+    def add_frame(self, rgb: Optional[tuple], timestamp=None, motion_delta: float = 0.0) -> None:
+        """Append one (r, g, b) sample to the ring buffers.
+
+        motion_delta (new, optional) — the caller's own frame-to-frame face
+        motion measurement (see Camera._compute_motion_delta), passed
+        through into the next process_ppg_signal() result dict as a
+        feature. Purely additive/optional: existing call sites that don't
+        pass it keep working exactly as before, with motion_delta=0.0.
+        """
+        self._latest_motion_delta = float(motion_delta)
         if rgb is None:
             return
         try:
@@ -634,7 +658,7 @@ class AdvancedRPPG:
         if len(valid_psd) == 0:
             return self._empty_result()
 
-        dominant_freq, peak_idx = _select_dominant_freq_hps(valid_freqs, valid_psd)
+        dominant_freq, peak_idx, harmonic_ratio = _select_dominant_freq_hps(valid_freqs, valid_psd)
         bpm_raw        = dominant_freq * 60.0
 
         # Time-domain hybrid estimator for short buffers (cold start) to stabilize resolution wobbles
@@ -787,6 +811,8 @@ class AdvancedRPPG:
             "algorithm":            self.algorithm.value,
             "filter_band_hz":       [round(self._adaptive_low, 3),
                                      round(self._adaptive_high, 3)],
+            "harmonic_ratio":       float(harmonic_ratio),
+            "motion_delta":         float(self._latest_motion_delta),
             "ready":                True,
             "ppg_signal":           ppg_filtered.tolist(),
         }
@@ -1059,6 +1085,7 @@ class AdvancedRPPG:
             "hrv": 0.0, "stress_index": 0.0,
             "algorithm": self.algorithm.value,
             "filter_band_hz": [_BP_SEED_LOW, _BP_SEED_HIGH],
+            "harmonic_ratio": 0.0, "motion_delta": float(self._latest_motion_delta),
             "ready": False, "ppg_signal": [],
         }
 

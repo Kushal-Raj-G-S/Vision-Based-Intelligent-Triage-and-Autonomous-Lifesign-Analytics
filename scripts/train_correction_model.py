@@ -34,6 +34,13 @@ FEATURE_COLUMNS = [
     "bpm", "sqi", "snr_db", "stability_score", "rr", "rr_confidence",
     "hrv", "stress_index", "filt_low", "filt_high",
 ]
+# A richer 16-feature schema (harmonic_ratio, motion_delta, pos_bpm,
+# chrom_pos_disagreement, rolling_bpm_mean/std) was prototyped in
+# scripts/build_ml_dataset.py and cheaply tested on a small subset with no
+# clear win yet — see the "big task" write-up in data/evolution/. Kept
+# parked here at the original 10-feature schema so this file stays
+# consistent with the currently-deployed models/cv_folds/ (trained on
+# exactly these 10 columns) until a full retrain+validation earns a switch.
 
 
 def mae(a, b):

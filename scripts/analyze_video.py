@@ -13,13 +13,24 @@ import numpy as np
 from core.rppg import AdvancedRPPG
 from core.camera import Camera
 
-# Correction-model feature order must match scripts/build_ml_dataset.py's
-# FEATURE_COLUMNS exactly — the model has no idea what a column "means", it
-# was trained on this exact positional order.
+# Correction-model feature order must match whatever FEATURE_COLUMNS the
+# loaded model was actually trained on — the model has no idea what a
+# column "means", it was trained on this exact positional order. This is
+# the 10-feature schema the currently-deployed models/cv_folds/ and
+# models/bpm_correction_gbr.joblib were trained on (Huber loss, verified
+# 6.48 BPM session MAE — see data/evolution/12-huber-loss.md). A richer
+# 16-feature schema (adding harmonic_ratio/motion_delta/pos_bpm/
+# chrom_pos_disagreement/rolling stats) was prototyped and cheaply tested
+# on a small subset (see data/evolution/ — the "big task" write-up) with
+# no clear win yet; scripts/build_ml_dataset.py already supports building
+# that richer dataset, but this live-correction path intentionally still
+# matches what's actually deployed until a full retrain+validation proves
+# the richer set is worth switching to.
 _CORRECTION_FEATURE_ORDER = [
     "bpm", "sqi", "snr_db", "stability_score", "rr", "rr_confidence",
     "hrv", "stress_index", "filt_low", "filt_high",
 ]
+_ROLLING_WINDOW = 30  # cycles — only used if/when the richer feature set above is adopted
 _correction_model_cache = {}
 
 
@@ -144,7 +155,7 @@ def analyze_video_complete(video_path, process_stride: int = 1, correction_model
 
             # Add to rPPG — every frame, regardless of stride, so the
             # buffer/window content is unaffected by the stride.
-            rppg.add_frame((avg_r, avg_g, avg_b))
+            rppg.add_frame((avg_r, avg_g, avg_b), motion_delta=motion_delta)
 
             if frame_count % process_stride != 0:
                 frame_count += 1

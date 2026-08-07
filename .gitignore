@@ -43,3 +43,4 @@ test/*.zip
 # (models/) and the logs proving what it measured (test/*.log) are the
 # actual evidence and are kept.
 test/ml_dataset.csv
+test/ml_dataset_subset_check.csv

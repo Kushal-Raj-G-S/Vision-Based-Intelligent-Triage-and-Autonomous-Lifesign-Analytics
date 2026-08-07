@@ -1,0 +1,10 @@
+subject1: 1475 rows (42s elapsed)
+subject22: 1957 rows (92s elapsed)
+subject32: 1958 rows (149s elapsed)
+subject41: 1916 rows (201s elapsed)
+subject37: 1957 rows (252s elapsed)
+s1_T1: 6238 rows (644s elapsed)
+s4_T2: 6120 rows (1052s elapsed)
+s11_T3: 4548 rows (1537s elapsed)
+
+Total: 26169 rows, 8 subjects, 1537s total
