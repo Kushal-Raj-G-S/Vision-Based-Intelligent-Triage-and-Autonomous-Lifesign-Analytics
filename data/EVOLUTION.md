@@ -66,6 +66,13 @@ each ends with a link to the next:
     (synthetic MAE 26.71→16.00) without touching CHROM at all, but real
     video (tested for the first time ever) still shows unresolved harmonic
     errors. A real, partial, honestly-scoped fix — POS stays experimental.
+16. [15 — POS's Real-Video Failures Aren't Threshold Problems](evolution/15-pos-real-video-ceiling.md)
+    — measured (not guessed) why the remaining real-video failures
+    resist threshold tuning: one has no correct candidate present at all,
+    the other's correct candidate is real but too weak (median 11% power)
+    to ever cross a safe threshold. Traces back to POS's weaker per-window
+    normalization (no variance equalization, unlike CHROM) — a projection-
+    level limitation, not a peak-selection one.
 
 Nothing here is invented after the fact — this is what actually happened,
 including the mistakes. Every claim in each chapter points at the actual
