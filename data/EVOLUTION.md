@@ -60,6 +60,12 @@ each ends with a link to the next:
     validation showed a slightly *worse* aggregate classical MAE (9.43 →
     9.54), so it was reverted rather than kept for a net-negative result.
     Current numbers unchanged from Era 12.
+15. [14 — POS's Own Bug Is a Mirror Image, Partially Fixed](evolution/14-pos-subharmonic-demotion.md)
+    — POS overshoots to ~2x the true rate from cold start, the mirror of
+    CHROM's undershoot bug; a symmetric demotion check fixed one pattern
+    (synthetic MAE 26.71→16.00) without touching CHROM at all, but real
+    video (tested for the first time ever) still shows unresolved harmonic
+    errors. A real, partial, honestly-scoped fix — POS stays experimental.
 
 Nothing here is invented after the fact — this is what actually happened,
 including the mistakes. Every claim in each chapter points at the actual

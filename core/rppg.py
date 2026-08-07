@@ -182,29 +182,47 @@ _HISTORY_UNSTICK_MAX_HISTORY = 10   # only allow unstick while the frozen anchor
 # only) because the observed failure direction is undershooting, not
 # overshooting.
 _SUBHARM_PROMOTE_RATIO = 0.55  # promote to 2x if that bin has >= 55% of the top candidate's power
-_SUBHARM_TOL_HZ        = 0.08  # how close to exactly 2x a bin must land to count
+_SUBHARM_TOL_HZ        = 0.08  # how close to exactly 2x (or 0.5x) a bin must land to count
+
+# Downward-demotion — the mirror image of the promotion check above, added
+# after tracing POS's own separate, previously-undocumented failure mode
+# (test/trace_pos_gt50.log): CHROM's documented bug undershoots to ~half
+# the true rate (fixed by the promotion check); POS instead OVERSHOOTS to
+# roughly double the true rate from the very first cold-start reading, and
+# the adaptive filter then locks onto and reinforces the wrong (high) peak,
+# narrowing the search band until the true (lower) frequency is filtered
+# out entirely. The promotion check can never catch this: it only ever
+# looks upward from the top candidate, and POS's top candidate is already
+# too high, not too low. This checks whether the top candidate's HALF has
+# comparable power instead, and demotes to it if so — same tolerance and
+# threshold as promotion, kept symmetric since there's no prior evidence
+# either direction needs different sensitivity.
+_SUBHARM_DEMOTE_RATIO = 0.55
 
 
 def _select_dominant_freq_hps(valid_freqs: np.ndarray, valid_psd: np.ndarray) -> tuple[float, int, float]:
     """
-    Select the dominant frequency, checking for and correcting a specific
-    subharmonic-lock signature: the raw top peak has a comparably-strong
-    companion at almost exactly double its frequency. Returns
-    (frequency_hz, bin_index, harmonic_ratio). Name kept as `_hps` for
-    call-site continuity even though the technique is no longer classic
-    HPS — see module comment above for why.
+    Select the dominant frequency, checking for and correcting two
+    harmonic-ambiguity signatures: the raw top peak has a comparably-strong
+    companion at almost exactly double its frequency (promote to the
+    double — CHROM's documented undershoot bug), or at almost exactly half
+    its frequency (demote to the half — POS's documented overshoot bug).
+    Returns (frequency_hz, bin_index, harmonic_ratio). Name kept as `_hps`
+    for call-site continuity even though the technique is no longer
+    classic HPS — see module comment above for why.
 
-    harmonic_ratio (new) is the top candidate's 2x-companion power ratio
-    (valid_psd[2x bin] / valid_psd[top bin], 0.0 if no bin lands near 2x at
-    all) — previously computed here purely to decide promote-or-not and
-    then discarded. Exposed as a feature for the ML correction layer: a
-    high ratio is a direct, real-time signal that THIS cycle's estimate is
-    ambiguous between two candidates a factor of ~2 apart (whichever one
-    was picked), independent of whether the promotion heuristic itself
-    fired — the model can learn to distrust a reading with a high ratio
-    even in cases the hand-written 0.55 threshold doesn't cleanly resolve
-    (e.g. subject41's genuinely bimodal signal, still unresolved as of
-    Era 13 — see data/evolution/13-majority-vote-gate-reverted.md).
+    harmonic_ratio (new) is whichever companion's power ratio was actually
+    checked (2x for the promotion path, 0.5x for the demotion path; 0.0 if
+    neither a 2x nor 0.5x bin was found at all) — previously computed here
+    purely to decide promote-or-not and then discarded. Exposed as a
+    feature for the ML correction layer: a high ratio is a direct,
+    real-time signal that THIS cycle's estimate is ambiguous between two
+    candidates a factor of ~2 apart (whichever one was picked), independent
+    of whether either heuristic actually fired — the model can learn to
+    distrust a reading with a high ratio even in cases the hand-written
+    0.55 threshold doesn't cleanly resolve (e.g. subject41's genuinely
+    bimodal signal, still unresolved as of Era 13 — see
+    data/evolution/13-majority-vote-gate-reverted.md).
     """
     n = len(valid_psd)
     top_idx = int(np.argmax(valid_psd))
@@ -212,12 +230,21 @@ def _select_dominant_freq_hps(valid_freqs: np.ndarray, valid_psd: np.ndarray) ->
         return float(valid_freqs[top_idx]), top_idx, 0.0
 
     f0 = valid_freqs[top_idx]
-    target = f0 * 2.0
-    j = int(np.argmin(np.abs(valid_freqs - target)))
-    if abs(valid_freqs[j] - target) <= _SUBHARM_TOL_HZ:
+
+    double_target = f0 * 2.0
+    j = int(np.argmin(np.abs(valid_freqs - double_target)))
+    if abs(valid_freqs[j] - double_target) <= _SUBHARM_TOL_HZ:
         ratio = float(valid_psd[j] / valid_psd[top_idx]) if valid_psd[top_idx] > 0 else 0.0
         if ratio >= _SUBHARM_PROMOTE_RATIO:
             return float(valid_freqs[j]), j, ratio
+        return float(f0), top_idx, ratio
+
+    half_target = f0 / 2.0
+    k = int(np.argmin(np.abs(valid_freqs - half_target)))
+    if abs(valid_freqs[k] - half_target) <= _SUBHARM_TOL_HZ:
+        ratio = float(valid_psd[k] / valid_psd[top_idx]) if valid_psd[top_idx] > 0 else 0.0
+        if ratio >= _SUBHARM_DEMOTE_RATIO:
+            return float(valid_freqs[k]), k, ratio
         return float(f0), top_idx, ratio
 
     return float(f0), top_idx, 0.0
