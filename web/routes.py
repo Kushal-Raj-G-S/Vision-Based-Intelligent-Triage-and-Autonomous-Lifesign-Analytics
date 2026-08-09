@@ -162,6 +162,26 @@ def generate_frames():
                 if isinstance(bpm, (int, float)) and bpm > 0:
                     web.session.bpm_history.append(float(bpm))
 
+                # Hybrid ML correction — same gate (sqi > 15) and feature
+                # order scripts/analyze_video.py already validated offline.
+                # Appends to a session-long list so the eventual triage run
+                # can take the same IQR-filtered median over corrected
+                # readings that produced the validated 6.48 BPM session MAE,
+                # instead of correcting a single noisy instantaneous cycle.
+                if web.correction_model is not None and results.get('sqi', 0) > 15:
+                    filt_band = results.get('filter_band_hz', [0.0, 0.0])
+                    feat_row = [[
+                        results['bpm'], results.get('sqi', 0.0), results.get('snr_db', 0.0),
+                        results.get('stability_score', 0.0), results.get('rr', 0.0),
+                        results.get('rr_confidence', 0.0), results.get('hrv', 0.0),
+                        results.get('stress_index', 0.0), filt_band[0], filt_band[1],
+                    ]]
+                    scaler = web.correction_model.get('scaler')
+                    feat_arr = scaler.transform(feat_row) if scaler is not None else feat_row
+                    corrected_bpm = float(web.correction_model['model'].predict(feat_arr)[0])
+                    if 40.0 <= corrected_bpm <= 180.0:
+                        web.session.corrected_bpm_history.append(corrected_bpm)
+
                 # Persist last known-good HRV and stress with EMA smoothing.
                 # EMA: new = alpha * raw + (1-alpha) * prev  — damps wild jumps.
                 # Stress index (very noisy) → alpha=0.15 (heavy smoothing)
@@ -182,7 +202,16 @@ def generate_frames():
 
                 rr_val = results.get('rr', 0) or 0
                 rr_conf = results.get('rr_confidence', 0) or 0
-                if rr_conf < 10:
+                # Match core/clinical.py's own RR_CONFIDENCE_LOW (30%) reliability
+                # floor — that engine already treats anything below it as an
+                # unreliable reading in its reasoning text; this gate used to be a
+                # much looser 10%, so a borderline noisy edge-lock (respiration's
+                # RSA modulation is weak in webcam PPG; a bad read tends to land
+                # right at the 6 or 30 br/min search-band edge — see
+                # AdvancedRPPG._estimate_rr's docstring) could slip past here and
+                # display as a solid-looking number the clinical engine had
+                # already privately flagged as untrustworthy.
+                if rr_conf < 30:
                     rr_val = 0
 
                 web.session.metrics = {
@@ -348,6 +377,7 @@ def _reset(source, live):
         web.session.image_mode      = False
         web.session.image_frame_bytes = None
         web.session.bpm_history    = []
+        web.session.corrected_bpm_history = []
         web.session.last_valid_hrv    = 0.0
         web.session.last_valid_stress = 0.0
         web.session.metrics.update({

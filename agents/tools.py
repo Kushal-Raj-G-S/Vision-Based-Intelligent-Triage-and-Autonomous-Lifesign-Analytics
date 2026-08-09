@@ -1,6 +1,23 @@
 #tools.py
+import statistics
 from crewai.tools import tool
 from scripts.analyze_video import analyze_video_complete
+
+
+def _median_iqr_filtered(values):
+    """Same outlier-robust aggregation scripts/analyze_video.py uses for
+    ML-corrected readings — applied here so the live path's corrected BPM is
+    computed the same validated way, not a plain mean of noisier per-cycle
+    predictions."""
+    if not values:
+        return None
+    sorted_v = sorted(values)
+    n = len(sorted_v)
+    q1, q3 = sorted_v[n // 4], sorted_v[(3 * n) // 4]
+    iqr = q3 - q1
+    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    filtered = [v for v in sorted_v if lo <= v <= hi] or sorted_v
+    return statistics.median(filtered)
 
 
 def get_vitals_dict(video_path: str) -> dict:
@@ -22,6 +39,7 @@ def get_vitals_dict(video_path: str) -> dict:
             with web.session.processing_lock:
                 metrics = dict(web.session.metrics)
                 history = list(web.session.bpm_history)
+                corrected_history = list(web.session.corrected_bpm_history)
                 last_report = web.session.last_compiled_report
 
             if not history and metrics.get('status') == 'WAITING':
@@ -58,9 +76,21 @@ def get_vitals_dict(video_path: str) -> dict:
             else:
                 avg_bpm = metrics.get('bpm', 0)
 
+            # Hybrid ML correction — prefer the IQR-filtered median over the
+            # session's corrected per-cycle readings (same aggregation
+            # validated offline at 6.48 BPM session MAE) over the classical
+            # mean whenever enough corrected readings exist. Falls back to
+            # the classical average if the model isn't loaded or the session
+            # hasn't produced enough high-SQI cycles yet — never silently
+            # worse than the previously-shipped behaviour.
+            corrected_bpm = _median_iqr_filtered(corrected_history) if len(corrected_history) >= 3 else None
+            final_bpm = corrected_bpm if corrected_bpm is not None else avg_bpm
+
             return {
                 'success': True,
-                'bpm': round(avg_bpm, 1),
+                'bpm': round(final_bpm, 1),
+                'bpm_classical': round(avg_bpm, 1),
+                'bpm_corrected': round(corrected_bpm, 1) if corrected_bpm is not None else None,
                 'confidence': metrics.get('confidence', 0),
                 'sqi': metrics.get('sqi', metrics.get('confidence', 0)),
                 'stability': metrics.get('stability', 0),
@@ -81,7 +111,9 @@ def get_vitals_dict(video_path: str) -> dict:
             }
 
     try:
-        results = analyze_video_complete(video_path)
+        import web
+        correction_path = web.CORRECTION_MODEL_PATH if web.correction_model is not None else None
+        results = analyze_video_complete(video_path, correction_model_path=correction_path)
         # analyze_video_complete() only estimates bpm/confidence today — no
         # rr/hrv/stress_index for pre-recorded files yet (those currently
         # only exist in the live/session pipeline). Surface that honestly
@@ -91,6 +123,12 @@ def get_vitals_dict(video_path: str) -> dict:
         results.setdefault('hrv', 0)
         results.setdefault('stress_index', 0)
         results.setdefault('sqi', results.get('confidence', 0))
+        # Prefer the hybrid-corrected BPM over classical, same as the live
+        # path — 'bpm' stays the single field core.clinical.assess reads,
+        # 'bpm_classical'/'final_bpm_corrected' stay available for honesty.
+        if results.get('final_bpm_corrected') is not None:
+            results['bpm_classical'] = results.get('final_bpm_classical', results['bpm'])
+            results['bpm'] = results['final_bpm_corrected']
         return results
     except Exception as e:
         return {

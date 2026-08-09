@@ -73,6 +73,25 @@ each ends with a link to the next:
     to ever cross a safe threshold. Traces back to POS's weaker per-window
     normalization (no variance equalization, unlike CHROM) — a projection-
     level limitation, not a peak-selection one.
+17. [16 — The 31% Reduction Is Real, But It Isn't Typical](evolution/16-subject-level-significance.md)
+    — an external review of the draft paper asked whether the hybrid
+    layer's headline MAE gain is broad or driven by outliers; parsing the
+    existing 71-session validation log (no rerun needed) found only
+    30/51 subjects actually improve, the 95% bootstrap CI on the mean
+    subject-level gain crosses zero, and a paired Wilcoxon test does not
+    reach significance (p=0.24) — the aggregate 31% reduction is real
+    arithmetic, but it is carried by ~5 subjects with large corrections,
+    not a uniform per-subject effect.
+18. [17 — Live-Testing Round 2](evolution/17-live-session-hardening.md) —
+    a second live end-to-end retest (webcam + upload) after the frontend
+    redesign found and fixed duplicate triage records (two separate root
+    causes), an RR display gate looser than the clinical engine's own
+    reliability floor, wired the already-validated hybrid ML correction
+    model into the live path for the first time (previously offline-only),
+    and caught a regression that RR-gate fix caused in `core/clinical.py`
+    — a good heart-rate reading was being discarded entirely whenever
+    respiration was unreliable — found and fixed by re-testing live, not
+    by inspection.
 
 Nothing here is invented after the fact — this is what actually happened,
 including the mistakes. Every claim in each chapter points at the actual

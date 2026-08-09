@@ -154,7 +154,22 @@ def assess(
     lower-weight terms reflecting reduced autonomic reserve — they shift
     the composite risk score but cannot trigger the shock flag alone.
     """
-    if hr <= 0 or rr <= 0:
+    # HR is the one vital this system can reliably extract from webcam rPPG
+    # (documented real-video accuracy in CLAUDE.md); it's the only hard
+    # requirement here. RR is NOT — respiration modulates the pulse signal
+    # weakly, and the display/aggregation gate now zeroes rr whenever
+    # rr_confidence can't clear a 30% reliability floor (see web/routes.py),
+    # which happens routinely on otherwise-perfectly-good sessions. This
+    # used to be `hr <= 0 or rr <= 0`, which meant EVERY session with an
+    # unreliable RR reading — including ones with a confident, high-quality
+    # HR reading — got thrown away entirely as "insufficient signal," never
+    # reaching the isolated-tachycardia/bradycardia/normal branches below
+    # that already handle rr=0 correctly (tachy_rr becomes 0, is_shock is
+    # forced false since shock requires BOTH vitals elevated). Confirmed
+    # against all 8 documented scenarios (see
+    # scripts/evaluate_agent_reliability.py's SCENARIOS) — none of them
+    # exercise "hr>0, rr=0", so none rely on the old combined gate.
+    if hr <= 0:
         return ClinicalAssessment(
             esi_level=3,
             esi_category=ESI_LEVELS[3][0],
@@ -163,15 +178,22 @@ def assess(
             shock_risk_score=0.0,
             primary_diagnosis="Insufficient signal for clinical assessment",
             reasoning=[
-                "Heart rate and/or respiratory rate could not be reliably "
-                "extracted from the available video/session — defaulting to "
-                "ESI 3 pending manual clinical assessment."
+                "Heart rate could not be reliably extracted from the available "
+                "video/session — defaulting to ESI 3 pending manual clinical "
+                "assessment."
             ],
             confidence="LOW",
             needs_manual_review=True,
         )
 
     reasoning: list = []
+    if rr <= 0:
+        reasoning.append(
+            "Respiratory rate could not be reliably measured this session "
+            "(insufficient RSA-modulation signal) — this assessment is based "
+            "on heart rate alone. Compensated Shock requires both vitals and "
+            "cannot be evaluated without a reliable RR reading."
+        )
 
     tachy_hr = _tachy_term(hr, HR_TACHY, span=40.0)   # saturates ≈140 bpm
     tachy_rr = _tachy_term(rr, RR_TACHY, span=15.0)   # saturates ≈35 br/min

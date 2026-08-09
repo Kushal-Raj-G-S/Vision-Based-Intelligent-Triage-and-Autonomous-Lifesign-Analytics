@@ -27,6 +27,24 @@ logging.basicConfig(
 )
 log = logging.getLogger("vital")
 
+
+class _QuietPollingFilter(logging.Filter):
+    """Hide successful, high-frequency polling GETs (the frontend hits /status
+    roughly once a second) so the terminal shows what actually matters —
+    POSTs, non-200s, and real pipeline events — instead of a wall of
+    identical 200 OK lines. Any failed request still prints normally."""
+
+    _quiet_paths = ("/status", "/api/cameras", "/api/triage_queue")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if ' 200 ' in msg and any(f'"GET {p} ' in msg for p in self._quiet_paths):
+            return False
+        return True
+
+
+logging.getLogger("werkzeug").addFilter(_QuietPollingFilter())
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 UPLOAD_FOLDER = "uploads"
@@ -38,7 +56,13 @@ IMAGE_EXTENSIONS: frozenset[str] = frozenset(
     {"jpg", "jpeg", "png", "bmp", "webp"}
 )
 
-MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+# None = no Flask-enforced cap. This app runs single-user, localhost-only
+# (see "Live camera is single-session by design" in CLAUDE.md) — the 100MB
+# limit existed for a hosted-multi-user threat model that doesn't apply here.
+# GB-sized real-video test files were hitting it as a hard 413 before the
+# upload handler ever ran. If this app is ever exposed beyond localhost,
+# reinstate a real cap here first.
+MAX_UPLOAD_BYTES = None
 
 # ── ARIA / NVIDIA NIM Config ──────────────────────────────────────────────────
 
@@ -202,6 +226,12 @@ class SessionState:
     bpm_history: list[float] = field(default_factory=list)
     triage_queue: list[dict] = field(default_factory=list)
 
+    # Per-cycle ML-corrected BPM readings (see CORRECTION_MODEL below) —
+    # collected the same way scripts/analyze_video.py's corrected_readings
+    # list is, so the session-end IQR-median filter matches what was
+    # actually validated (6.48 BPM MAE) rather than a different aggregation.
+    corrected_bpm_history: list[float] = field(default_factory=list)
+
     # Persisted "last good" autonomic values (survive momentary signal loss)
     last_valid_hrv: float = 0.0
     last_valid_stress: float = 0.0
@@ -221,6 +251,7 @@ class SessionState:
         self.image_frame_bytes = None
         self.bpm_history.clear()
         self.triage_queue.clear()
+        self.corrected_bpm_history.clear()
         self.last_valid_hrv = 0.0
         self.last_valid_stress = 0.0
         self.last_compiled_report = None
@@ -240,6 +271,33 @@ log.info(
     camera.__class__.__name__,
     rppg_engine.__class__.__name__,
 )
+
+# ── Hybrid ML BPM Correction Model ────────────────────────────────────────────
+# Same deployed model (Huber-loss GBR, 6.48 BPM session MAE out-of-fold across
+# 71 real sessions — see data/evolution/12-huber-loss.md) that was previously
+# only ever applied to pre-recorded videos via scripts/analyze_video.py. Loaded
+# once here so the live webcam path (web/routes.py::generate_frames) can apply
+# the exact same correction per cycle instead of shipping classical-DSP-only
+# numbers on the live path while the offline path stays more accurate.
+CORRECTION_MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "models", "bpm_correction_gbr.joblib"
+)
+# Feature order the deployed model was actually trained on — positional, not
+# named, so this MUST match scripts/analyze_video.py's _CORRECTION_FEATURE_ORDER.
+CORRECTION_FEATURE_ORDER = [
+    "bpm", "sqi", "snr_db", "stability_score", "rr", "rr_confidence",
+    "hrv", "stress_index", "filt_low", "filt_high",
+]
+correction_model = None
+try:
+    import joblib
+    correction_model = joblib.load(CORRECTION_MODEL_PATH)
+    log.info("Hybrid BPM correction model loaded — now applied on the live webcam path too.")
+except Exception as exc:
+    log.warning(
+        "Could not load hybrid correction model (%s) — live path stays classical-DSP-only: %s",
+        CORRECTION_MODEL_PATH, exc,
+    )
 
 # ── Route Registration ────────────────────────────────────────────────────────
 # Import routes AFTER app, session, camera, and rppg_engine are defined so that

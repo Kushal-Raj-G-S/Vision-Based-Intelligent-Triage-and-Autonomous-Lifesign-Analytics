@@ -237,7 +237,9 @@ def analyze_video_complete(video_path, process_stride: int = 1, correction_model
         # stabilise than HR — only average over readings where the engine
         # itself reported reasonable confidence, so a few noisy early frames
         # don't null out a perfectly good final reading.
-        rr_readings_valid = [r for r in recent_readings if r['rr'] > 0 and r['rr_confidence'] >= 10]
+        # Threshold matches core/clinical.py's RR_CONFIDENCE_LOW (30%) — see
+        # web/routes.py's identical gate for why 10% was too permissive.
+        rr_readings_valid = [r for r in recent_readings if r['rr'] > 0 and r['rr_confidence'] >= 30]
         rr_valid = [r['rr'] for r in rr_readings_valid]
         rr_conf_valid = [r['rr_confidence'] for r in rr_readings_valid]
         hrv_valid = [r['hrv'] for r in recent_readings if r['hrv'] > 0]

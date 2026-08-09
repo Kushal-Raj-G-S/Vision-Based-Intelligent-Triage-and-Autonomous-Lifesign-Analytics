@@ -124,5 +124,5 @@ def build_triage_crew() -> Crew:
         agents=[perception_agent, diagnostic_agent, coordinator_agent],
         tasks=[vitals_extraction_task, diagnostic_triage_task, prioritization_coordination_task],
         process=Process.sequential,
-        verbose=True,
+        verbose=False,
     )
