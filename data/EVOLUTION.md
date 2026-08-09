@@ -92,6 +92,13 @@ each ends with a link to the next:
     — a good heart-rate reading was being discarded entirely whenever
     respiration was unreliable — found and fixed by re-testing live, not
     by inspection.
+19. [18 — A Real Uploaded-Video Workflow](evolution/18-uploaded-video-workflow.md)
+    — uploading a video used to immediately auto-play it with no way to
+    stage files ahead of time; decoupled upload from playback, added a
+    video picker and a playback-progress overlay (`0:32 / 0:52`), and
+    auto-triage for uploaded videos on `VIDEO_ENDED`, mirroring the live
+    30-second countdown's already-established duplicate-entry guard.
+    Verified end-to-end on a real video by the project owner.
 
 Nothing here is invented after the fact — this is what actually happened,
 including the mistakes. Every claim in each chapter points at the actual

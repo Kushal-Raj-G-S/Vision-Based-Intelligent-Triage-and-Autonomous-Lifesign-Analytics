@@ -146,6 +146,20 @@ def generate_frames():
             web.session.metrics['estimated_lux'] = lux
             web.session.metrics['motion_delta']  = int(motion_delta)
 
+            # Playback progress for an uploaded video file — display only,
+            # never used by the DSP/clinical pipeline. None for a live
+            # camera (Camera.get_total_frames() returns None for an int
+            # source), so the frontend can hide the overlay entirely there.
+            total_frames = web.camera.get_total_frames()
+            if total_frames is not None and web.rppg_engine.fps > 0:
+                video_current_sec = round(web.session.frame_count / web.rppg_engine.fps, 1)
+                video_total_sec   = round(total_frames / web.rppg_engine.fps, 1)
+            else:
+                video_current_sec = None
+                video_total_sec   = None
+            web.session.metrics['video_current_sec'] = video_current_sec
+            web.session.metrics['video_total_sec']   = video_total_sec
+
             # Warnings list
             warnings = []
             if is_moving or motion_delta > 15.0:
@@ -238,6 +252,8 @@ def generate_frames():
                     'face_detected':        roi_data is not None,
                     'ppg_signal':           results.get('ppg_signal', [])[-150:],
                     'calibration_progress': 100,
+                    'video_current_sec':    video_current_sec,
+                    'video_total_sec':      video_total_sec,
                 }
             else:
                 web.session.metrics['status']           = 'CALIBRATING'
@@ -468,8 +484,59 @@ def upload_video():
             'mode': 'image',
         })
 
+    # Store only — do NOT start playback here. Uploading used to immediately
+    # call _reset() and start streaming the video, which meant there was no
+    # way to upload several videos ahead of time and choose which one to run
+    # later; every new upload silently pre-empted whatever had just started.
+    # Playback now starts explicitly via /api/start_uploaded_video, selected
+    # from /api/uploaded_videos' listing (see the "Uploaded Video" device
+    # mode in the frontend).
+    return jsonify({'success': True, 'message': f'Video saved: {filename}', 'mode': 'video', 'filename': filename})
+
+
+@app.route('/api/uploaded_videos')
+def list_uploaded_videos():
+    """List previously uploaded video files (not images) available to play."""
+    upload_dir = os.path.join(app.root_path, '..', web.UPLOAD_FOLDER)
+    videos = []
+    try:
+        for fname in sorted(os.listdir(upload_dir)):
+            full_path = os.path.join(upload_dir, fname)
+            if not os.path.isfile(full_path):
+                continue
+            if allowed_file(fname) and not _is_image_file(fname):
+                videos.append({
+                    'filename': fname,
+                    'size_bytes': os.path.getsize(full_path),
+                    'modified': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(os.path.getmtime(full_path))),
+                })
+    except FileNotFoundError:
+        pass
+    # Most recently uploaded first.
+    videos.sort(key=lambda v: v['modified'], reverse=True)
+    return jsonify({'videos': videos})
+
+
+@app.route('/api/start_uploaded_video', methods=['POST'])
+def start_uploaded_video():
+    """Start playing a specific, already-uploaded video by filename."""
+    data = request.get_json(silent=True) or {}
+    filename = secure_filename((data.get('filename') or '').strip())
+    if not filename:
+        return jsonify({'success': False, 'error': 'No filename provided.'}), 400
+
+    upload_dir = os.path.join(app.root_path, '..', web.UPLOAD_FOLDER)
+    filepath = os.path.join(upload_dir, filename)
+    # secure_filename() already strips path-traversal components, but
+    # resolve-and-contain is the actual guarantee against escaping the
+    # upload directory, not just filename sanitization.
+    if os.path.commonpath([os.path.abspath(filepath), os.path.abspath(upload_dir)]) != os.path.abspath(upload_dir):
+        return jsonify({'success': False, 'error': 'Invalid filename.'}), 400
+    if not os.path.isfile(filepath):
+        return jsonify({'success': False, 'error': f'No uploaded video named "{filename}" found.'}), 404
+
     _reset(filepath, live=False)
-    return jsonify({'success': True, 'message': f'Video uploaded: {filename}', 'mode': 'video'})
+    return jsonify({'success': True, 'message': f'Playing: {filename}'})
 
 
 @app.route('/api/cameras')

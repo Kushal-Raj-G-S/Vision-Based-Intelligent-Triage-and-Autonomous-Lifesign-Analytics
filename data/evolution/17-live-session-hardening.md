@@ -146,5 +146,6 @@ inspection or by trusting that the change "looked safe."
   the IEEE paper's Dashboard Interface figure — verified sharp at 1:1
   pixel crop, not just visually.
 
-**Next: see the top-level [`data/README.md`](../README.md) for where the
-project stands now.**
+**Next: [Era 18 — A Real Uploaded-Video Workflow](18-uploaded-video-workflow.md)**
+— decoupling upload from playback, a video picker, playback-progress
+display, and auto-triage for uploaded videos too.

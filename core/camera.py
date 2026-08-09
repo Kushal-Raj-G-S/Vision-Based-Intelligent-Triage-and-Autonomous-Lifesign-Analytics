@@ -342,6 +342,23 @@ class Camera:
                 pass
         return default
 
+    def get_total_frames(self) -> Optional[int]:
+        """
+        Total frame count for a video FILE source, or None for a live camera
+        (an infinite/unbounded stream, or a device that doesn't report a
+        frame count at all). Used only to show upload playback progress
+        ("0:32 / 0:52") — never for anything DSP-affecting, so an
+        occasionally-inaccurate container-metadata count (a known quirk of
+        some codecs) is an acceptable display-only approximation.
+        """
+        if self.video is None or isinstance(self._source, int):
+            return None
+        try:
+            count = int(self.video.get(cv2.CAP_PROP_FRAME_COUNT))
+            return count if count > 0 else None
+        except Exception:
+            return None
+
     def release_video(self) -> None:
         """Release the capture device; keep face detectors alive."""
         if self.video is not None:

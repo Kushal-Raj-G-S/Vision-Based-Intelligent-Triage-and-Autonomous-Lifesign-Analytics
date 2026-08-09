@@ -55,6 +55,8 @@ interface Metrics {
   ppg_signal: number[];
   calibration_progress: number;
   face_detected?: boolean;
+  video_current_sec?: number | null;
+  video_total_sec?: number | null;
 }
 
 const BACKEND_URL = "http://127.0.0.1:5002";
@@ -73,10 +75,23 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
+  // "92.4" -> "1:32" -- used for the uploaded-video playback-progress overlay.
+  const formatDuration = (seconds: number): string => {
+    const total = Math.max(0, Math.round(seconds));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
   // Connection and settings state
   const [backendOnline, setBackendOnline] = useState<boolean>(false);
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<number | null>(null);
+  // Optical Device mode: a live camera, or a previously uploaded video file
+  // chosen explicitly from the list below rather than auto-playing on upload.
+  const [deviceMode, setDeviceMode] = useState<'camera' | 'upload'>('camera');
+  const [uploadedVideos, setUploadedVideos] = useState<{ filename: string; size_bytes: number; modified: string }[]>([]);
+  const [selectedUploadedVideo, setSelectedUploadedVideo] = useState<string>('');
   
   // Real-time metric states
   const [metrics, setMetrics] = useState<Metrics>({
@@ -120,6 +135,7 @@ export default function Home() {
   const [reportLoading, setReportLoading] = useState<boolean>(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const reportFetchedRef = useRef<boolean>(false);
+  const videoTriageFetchedRef = useRef<boolean>(false);
   // Synchronous lock against handleRunTriage firing twice in close succession
   // (e.g. the 30s auto-trigger and a manual click landing in the same tick).
   // isTriageRunning is React state and doesn't update synchronously, so it
@@ -152,6 +168,7 @@ export default function Home() {
           setSelectedCamera((prev) => prev !== null ? prev : data.default);
         }
         fetchQueue();
+        fetchUploadedVideos();
       } else {
         setBackendOnline(false);
         sessionStartedRef.current = false; // backend went offline, allow re-start
@@ -171,6 +188,24 @@ export default function Home() {
       }
     } catch (e) {
       console.error("Error fetching triage queue:", e);
+    }
+  };
+
+  const fetchUploadedVideos = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/uploaded_videos`);
+      if (res.ok) {
+        const data = await res.json();
+        const videos = data.videos || [];
+        setUploadedVideos(videos);
+        // Keep the current selection if it still exists; otherwise default
+        // to the most recent upload so the dropdown isn't left empty.
+        setSelectedUploadedVideo((prev) =>
+          videos.some((v: { filename: string }) => v.filename === prev) ? prev : (videos[0]?.filename || '')
+        );
+      }
+    } catch (e) {
+      console.error("Error fetching uploaded videos:", e);
     }
   };
 
@@ -261,6 +296,39 @@ export default function Home() {
     }
     return () => {};
   }, [metrics.calibration_done, metrics.is_live, sessionReport]);
+
+  // Auto-trigger triage for UPLOADED VIDEOS once the whole file has been
+  // processed (VIDEO_ENDED) -- the live-session countdown above only fires
+  // for is_live sessions, on a fixed 30s window; a video has no fixed
+  // window, but its natural end IS the "the whole session's data is ready"
+  // signal, so trigger on that instead of leaving it purely manual.
+  useEffect(() => {
+    if (metrics.status === 'VIDEO_ENDED' && !metrics.is_live) {
+      if (!videoTriageFetchedRef.current) {
+        videoTriageFetchedRef.current = true;
+        // Same synchronous-flip reasoning as the live countdown above --
+        // disable the manual Kickoff button immediately, not after the
+        // report fetch resolves, so a manual click can't race this and
+        // create a duplicate queue entry for the same video.
+        setTriageAutoRan(true);
+        setReportLoading(true);
+        fetch(`${BACKEND_URL}/api/generate_report`, { method: 'POST' })
+          .then(r => r.json())
+          .then(d => {
+            if (d.success) {
+              setSessionReport(d.report);
+              handleRunTriage(patientName);
+            }
+          })
+          .catch(console.error)
+          .finally(() => setReportLoading(false));
+      }
+    } else if (metrics.status !== 'VIDEO_ENDED') {
+      // Reset once a new session starts (a fresh video played, or a live
+      // session begins) so the next VIDEO_ENDED can auto-trigger again.
+      videoTriageFetchedRef.current = false;
+    }
+  }, [metrics.status, metrics.is_live]);
 
   // 2. Draw rPPG wave signal on HTML5 Canvas
   useEffect(() => {
@@ -442,6 +510,31 @@ export default function Home() {
     }
   };
 
+  const handleStartUploadedVideo = async () => {
+    setUploadMessage({ text: '', type: '' });
+    if (!selectedUploadedVideo) {
+      setUploadMessage({ text: 'No uploaded video selected.', type: 'error' });
+      return;
+    }
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/start_uploaded_video`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: selectedUploadedVideo })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setUploadMessage({ text: `Playing ${selectedUploadedVideo} -- full video runs through to the end, then Kickoff Triage picks up the final result.`, type: 'success' });
+        // Force video feed img to reconnect (backend reset kills old MJPEG stream)
+        setTimeout(() => setVideoFeedKey(k => k + 1), 400);
+      } else {
+        setUploadMessage({ text: data.error || 'Failed to start video.', type: 'error' });
+      }
+    } catch (e) {
+      setUploadMessage({ text: 'Error starting uploaded video.', type: 'error' });
+    }
+  };
+
   const handleReleaseCamera = async () => {
     try {
       await fetch(`${BACKEND_URL}/release_camera`, { method: 'POST' });
@@ -468,7 +561,17 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.success) {
-        setUploadMessage({ text: `Media loaded: ${data.message}`, type: 'success' });
+        if (data.mode === 'video') {
+          // Videos are stored, not auto-played -- switch the Optical Device
+          // to "Uploaded Video" mode and pre-select this file so the next
+          // step is just: type a name, hit Play.
+          await fetchUploadedVideos();
+          setDeviceMode('upload');
+          setSelectedUploadedVideo(data.filename || '');
+          setUploadMessage({ text: `Saved: ${data.filename}. Select it under Optical Device -> Uploaded Video, then press Play.`, type: 'success' });
+        } else {
+          setUploadMessage({ text: `Media loaded: ${data.message}`, type: 'success' });
+        }
       } else {
         setUploadMessage({ text: data.error || 'Upload failed.', type: 'error' });
       }
@@ -990,7 +1093,7 @@ export default function Home() {
                   )}
                 </div>
 
-                <div className="relative min-h-[420px] bg-[#080a0f] border border-white/[0.06] rounded-xl overflow-hidden mb-4 flex items-center justify-center">
+                <div className="group relative min-h-[420px] bg-[#080a0f] border border-white/[0.06] rounded-xl overflow-hidden mb-4 flex items-center justify-center">
 
                   {backendOnline ? (
                     metrics.status === 'IMAGE_READY' || metrics.remark === 'IMAGE_DEMO' ? (
@@ -1043,7 +1146,38 @@ export default function Home() {
                       </span>
                     )}
                   </div>
+
+                  {metrics.video_total_sec != null && (
+                    <span
+                      className="absolute bottom-3 right-3 text-[11px] font-mono font-semibold px-2.5 py-1 rounded-md bg-black/70 text-zinc-200 border border-white/10 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20"
+                      title="Uploaded video playback position"
+                    >
+                      {formatDuration(metrics.video_current_sec || 0)} / {formatDuration(metrics.video_total_sec)}
+                      {metrics.status === 'VIDEO_ENDED' && ' (ended)'}
+                    </span>
+                  )}
                 </div>
+
+                {metrics.status === 'VIDEO_ENDED' && !metrics.is_live && (
+                  <div className="mb-4 flex items-center justify-between gap-3 bg-amber-500/10 border border-amber-500/25 rounded-lg px-4 py-3">
+                    <span className="text-xs font-semibold text-amber-300 flex items-center gap-2">
+                      {isTriageRunning ? (
+                        <>
+                          <span className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin"></span>
+                          Video finished -- Triage Crew is running automatically on the full-video result...
+                        </>
+                      ) : (
+                        <>Video finished -- Triage Crew ran automatically on the full-video result.</>
+                      )}
+                    </span>
+                    <button
+                      onClick={() => goToTab('crew')}
+                      className="shrink-0 text-xs font-bold text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-md px-3 py-1.5 transition-colors"
+                    >
+                      View in Clinical Crew &rarr;
+                    </button>
+                  </div>
+                )}
 
                 {/* Controller section */}
                 <div className="flex flex-col gap-4">
@@ -1061,33 +1195,41 @@ export default function Home() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="flex flex-col gap-1.5">
                       <label className="text-[10px] text-zinc-450 font-black uppercase tracking-wider">Optical Device</label>
-                      <select 
-                        value={selectedCamera !== null ? selectedCamera : ''}
-                        onChange={(e) => setSelectedCamera(Number(e.target.value))}
+                      <select
+                        value={deviceMode === 'upload' ? '__upload__' : (selectedCamera !== null ? selectedCamera : '')}
+                        onChange={(e) => {
+                          if (e.target.value === '__upload__') {
+                            setDeviceMode('upload');
+                          } else {
+                            setDeviceMode('camera');
+                            setSelectedCamera(Number(e.target.value));
+                          }
+                        }}
                         className="bg-[#02040a] border border-zinc-800 rounded-lg text-sm p-2.5 text-zinc-300 outline-none focus:border-cyan-500 transition-colors cursor-pointer"
                       >
                         {cameras.map((cam) => (
                           <option key={cam.index} value={cam.index} style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>{cam.label}</option>
                         ))}
                         {cameras.length === 0 && <option value="" style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>No hardware found</option>}
+                        <option value="__upload__" style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>Uploaded Video</option>
                       </select>
                     </div>
 
                     <div className="flex flex-col gap-1.5">
                       <label className="text-[10px] text-zinc-450 font-black uppercase tracking-wider">Interface controls</label>
                       <div className="flex gap-2">
-                        <button 
-                          onClick={handleStartWebcam}
+                        <button
+                          onClick={deviceMode === 'upload' ? handleStartUploadedVideo : handleStartWebcam}
                           className="flex-1 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 hover:border-cyan-500/60 font-bold text-xs py-2.5 px-3 rounded-lg transition-all shadow-glow-cyan"
                         >
-                          Init Sensors
+                          {deviceMode === 'upload' ? 'Load Video' : 'Init Sensors'}
                         </button>
-                        <button 
-                          onClick={metrics.is_live ? handleReleaseCamera : handleStartWebcam}
+                        <button
+                          onClick={metrics.is_live ? handleReleaseCamera : (deviceMode === 'upload' ? handleStartUploadedVideo : handleStartWebcam)}
                           title={metrics.is_live ? "Release Hardware (Stop)" : "Initialize Hardware (Play)"}
                           className={`px-4 py-2 border rounded-lg transition-colors flex items-center justify-center font-bold text-xs ${
-                            metrics.is_live 
-                              ? 'bg-rose-950/20 hover:bg-rose-900/20 border-rose-800/40 text-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.1)]' 
+                            metrics.is_live
+                              ? 'bg-rose-950/20 hover:bg-rose-900/20 border-rose-800/40 text-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.1)]'
                               : 'bg-emerald-950/20 hover:bg-emerald-900/20 border-emerald-800/40 text-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.1)]'
                           }`}
                         >
@@ -1096,6 +1238,26 @@ export default function Home() {
                       </div>
                     </div>
                   </div>
+
+                  {deviceMode === 'upload' && (
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[10px] text-zinc-450 font-black uppercase tracking-wider">Uploaded Video (select which one to play)</label>
+                      <select
+                        value={selectedUploadedVideo}
+                        onChange={(e) => setSelectedUploadedVideo(e.target.value)}
+                        className="bg-[#02040a] border border-zinc-800 rounded-lg text-sm p-2.5 text-zinc-300 outline-none focus:border-cyan-500 transition-colors cursor-pointer"
+                      >
+                        {uploadedVideos.length === 0 && (
+                          <option value="" style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>No videos uploaded yet</option>
+                        )}
+                        {uploadedVideos.map((v) => (
+                          <option key={v.filename} value={v.filename} style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>
+                            {v.filename} ({v.modified})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
                   <div className="flex flex-col gap-1.5">
                     <label className="text-[10px] text-zinc-450 font-black uppercase tracking-wider">Upload Record (Video / Image)</label>
