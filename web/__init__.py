@@ -115,10 +115,11 @@ app = Flask(__name__)
 
 # CORS: was "origins": "*" — any website could call this API from a browser.
 # Restrict to an explicit allowlist (override with CORS_ORIGINS=comma,separated
-# in .env for deployment; defaults to the Next.js dev server only).
+# in .env for deployment; defaults to the local Next.js dev servers: 3000 = current dashboard,
+# 3001 = the previous dashboard kept running side by side).
 _cors_origins = [
     o.strip() for o in os.getenv(
-        "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+        "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
     ).split(",") if o.strip()
 ]
 CORS(app, resources={r"/*": {"origins": _cors_origins}})
@@ -290,8 +291,8 @@ CORRECTION_FEATURE_ORDER = [
 ]
 correction_model = None
 try:
-    import joblib
-    correction_model = joblib.load(CORRECTION_MODEL_PATH)
+    from core.ml_compat import load_joblib_compat
+    correction_model = load_joblib_compat(CORRECTION_MODEL_PATH)
     log.info("Hybrid BPM correction model loaded — now applied on the live webcam path too.")
 except Exception as exc:
     log.warning(

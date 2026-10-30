@@ -60,6 +60,35 @@ HRV_LOW = 20.0             # ms RMSSD — below this = reduced autonomic reserve
 SQI_MIN_CONFIDENT = 40.0   # composite SQI below this = low-confidence vitals
 RR_CONFIDENCE_LOW = 30.0   # rr_confidence (0-100) below this = respiration reading is unreliable
 
+# ── Age-specific thresholds (children) ───────────────────────────────────────
+# The adult numbers above are wrong for children: a resting 140 bpm is normal for a toddler and
+# alarming for an adult, and an adult's "normal" 50-60 bpm is dangerous bradycardia in an infant.
+#   * Tachycardia / tachypnea: ESI Implementation Handbook v4, "danger zone vital signs"
+#     (<3 mo HR>180 RR>50; 3 mo-3 y HR>160 RR>40; 3-8 y HR>140 RR>30; >8 y HR>100 RR>20).
+#   * Bradycardia: lower bound of the PALS (AHA) normal awake heart-rate range for the age group
+#     (infant 100, toddler 98, preschool 80, school-age 75, adolescent 60).
+# Each band: (upper age bound in years, exclusive; HR_TACHY, HR_BRADY, RR_TACHY, label).
+AGE_BANDS = [
+    (0.25, 180.0, 100.0, 50.0, "infant under 3 months"),
+    (3.0,  160.0,  98.0, 40.0, "child 3 months to 3 years"),
+    (8.0,  140.0,  80.0, 30.0, "child 3 to 8 years"),
+    (13.0, 100.0,  75.0, 20.0, "child 8 to 13 years"),
+    (18.0, 100.0,  60.0, 20.0, "adolescent 13 to 18 years"),
+]
+# What the camera pipeline can physically report (core/rppg.py: _BP_HIGH_CEIL = 3.0 Hz,
+# _RR_BAND_HI_CAP_HZ = 0.80 Hz). A threshold at or above these can never trigger.
+MEASURABLE_HR_MAX = 180.0
+MEASURABLE_RR_MAX = 48.0
+
+
+def thresholds_for_age(age_years):
+    """(hr_tachy, hr_brady, rr_tachy, label) for this age; adult values when age is unknown/18+."""
+    if age_years is not None and age_years >= 0:
+        for upper, hr_t, hr_b, rr_t, label in AGE_BANDS:
+            if age_years < upper:
+                return hr_t, hr_b, rr_t, label
+    return HR_TACHY, HR_BRADY, RR_TACHY, "adult"
+
 
 @dataclass
 class ClinicalAssessment:
@@ -127,6 +156,7 @@ def assess(
     stress_index: float = 0.0,
     sqi: float = 100.0,
     rr_confidence: float = 100.0,
+    age_years: float | None = None,
 ) -> ClinicalAssessment:
     """
     Compute a deterministic ESI level + Compensated Shock assessment.
@@ -153,7 +183,12 @@ def assess(
     HRV (RMSSD) and the Baevsky Stress Index are folded in as secondary,
     lower-weight terms reflecting reduced autonomic reserve — they shift
     the composite risk score but cannot trigger the shock flag alone.
+
+    `age_years` selects age-specific HR/RR limits (see AGE_BANDS). None = unknown = adult limits,
+    which is what every caller that does not record age (dashboard, offline scripts) gets.
     """
+    hr_tachy, hr_brady, rr_tachy, age_label = thresholds_for_age(age_years)
+    is_child = age_label != "adult"
     # HR is the one vital this system can reliably extract from webcam rPPG
     # (documented real-video accuracy in CLAUDE.md); it's the only hard
     # requirement here. RR is NOT — respiration modulates the pulse signal
@@ -187,6 +222,11 @@ def assess(
         )
 
     reasoning: list = []
+    if is_child:
+        reasoning.append(
+            f"Age {age_years:g} y ({age_label}): age-specific limits applied — tachycardia >{hr_tachy:.0f} bpm, "
+            f"bradycardia <{hr_brady:.0f} bpm, tachypnea >{rr_tachy:.0f} br/min."
+        )
     if rr <= 0:
         reasoning.append(
             "Respiratory rate could not be reliably measured this session "
@@ -195,9 +235,9 @@ def assess(
             "cannot be evaluated without a reliable RR reading."
         )
 
-    tachy_hr = _tachy_term(hr, HR_TACHY, span=40.0)   # saturates ≈140 bpm
-    tachy_rr = _tachy_term(rr, RR_TACHY, span=15.0)   # saturates ≈35 br/min
-    brady_hr = _brady_term(hr, HR_BRADY, span=20.0)
+    tachy_hr = _tachy_term(hr, hr_tachy, span=40.0)   # saturates 40 bpm above the limit
+    tachy_rr = _tachy_term(rr, rr_tachy, span=15.0)   # saturates 15 br/min above the limit
+    brady_hr = _brady_term(hr, hr_brady, span=20.0)
 
     # Polynomial (multiplicative) cross-correlation — the actual
     # "Compensated Shock" synergy signal.
@@ -223,12 +263,12 @@ def assess(
     # gate this boolean; it instead grades *severity* once the flag is true
     # (a 105/22 borderline case and a 160/35 crisis case both flag `is_shock`,
     # but only the latter drives ESI to level 1 and priority near 100).
-    is_shock = hr > HR_TACHY and rr > RR_TACHY
+    is_shock = hr > hr_tachy and rr > rr_tachy
 
     if is_shock:
         reasoning.append(
-            f"Compensated Shock criteria met: HR {hr:.0f} bpm (>{HR_TACHY:.0f}, tachycardia) "
-            f"AND RR {rr:.0f} br/min (>{RR_TACHY:.0f}, tachypnea); interaction severity={shock_interaction:.2f}."
+            f"Compensated Shock criteria met: HR {hr:.0f} bpm (>{hr_tachy:.0f}, tachycardia) "
+            f"AND RR {rr:.0f} br/min (>{rr_tachy:.0f}, tachypnea); interaction severity={shock_interaction:.2f}."
         )
         # Respiratory rate here is a proxy signal — respiratory sinus
         # arrhythmia riding on the pulse waveform, not a direct chest-motion
@@ -246,12 +286,12 @@ def assess(
                 f"well-lit, silent conditions before treating this shock flag as confirmed."
             )
     elif tachy_hr > 0:
-        reasoning.append(f"Isolated tachycardia: HR {hr:.0f} bpm (>{HR_TACHY:.0f}), respiration normal.")
+        reasoning.append(f"Isolated tachycardia: HR {hr:.0f} bpm (>{hr_tachy:.0f}), respiration normal.")
     elif tachy_rr > 0:
-        reasoning.append(f"Isolated tachypnea: RR {rr:.0f} br/min (>{RR_TACHY:.0f}), heart rate normal.")
+        reasoning.append(f"Isolated tachypnea: RR {rr:.0f} br/min (>{rr_tachy:.0f}), heart rate normal.")
 
     if brady_hr > 0:
-        reasoning.append(f"Bradycardia present: HR {hr:.0f} bpm (<{HR_BRADY:.0f}).")
+        reasoning.append(f"Bradycardia present: HR {hr:.0f} bpm (<{hr_brady:.0f}).")
     if stress_term > 0:
         label = "CRITICAL" if stress_index > STRESS_CRITICAL else "ELEVATED"
         reasoning.append(f"Baevsky Stress Index {stress_index:.0f} — {label} autonomic load.")
@@ -314,6 +354,19 @@ def assess(
     # "HIGH" the overall signal-quality tier looks, since SQI measures
     # waveform cleanliness generically and does not specifically capture
     # respiratory-rate reliability (see the rr_confidence check above).
+    if is_child:
+        needs_manual_review = True
+        reasoning.append(
+            "Patient is a child: camera-derived vitals have only been validated on adults, so this "
+            "result must be confirmed by a clinician."
+        )
+        if hr_tachy >= MEASURABLE_HR_MAX or rr_tachy >= MEASURABLE_RR_MAX:
+            reasoning.append(
+                f"At this age the danger limits (HR >{hr_tachy:.0f}, RR >{rr_tachy:.0f}) are at or above "
+                f"what the camera can measure (about {MEASURABLE_HR_MAX:.0f} bpm / {MEASURABLE_RR_MAX:.0f} "
+                f"br/min), so a dangerously fast rate could be missed. Measure manually."
+            )
+
     if is_shock and not needs_manual_review:
         needs_manual_review = True
         reasoning.append(

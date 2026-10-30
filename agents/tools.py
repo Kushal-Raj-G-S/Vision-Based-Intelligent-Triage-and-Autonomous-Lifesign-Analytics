@@ -41,6 +41,10 @@ def get_vitals_dict(video_path: str) -> dict:
                 history = list(web.session.bpm_history)
                 corrected_history = list(web.session.corrected_bpm_history)
                 last_report = web.session.last_compiled_report
+                # The engine's own accumulated RR readings — see below for why
+                # the instantaneous metrics['rr'] is not what should reach the
+                # clinical engine.
+                rr_history = list(getattr(web.rppg_engine, 'rr_history', []) or [])
 
             if not history and metrics.get('status') == 'WAITING':
                 if last_report:
@@ -86,6 +90,21 @@ def get_vitals_dict(video_path: str) -> dict:
             corrected_bpm = _median_iqr_filtered(corrected_history) if len(corrected_history) >= 3 else None
             final_bpm = corrected_bpm if corrected_bpm is not None else avg_bpm
 
+            # Respiratory rate gets the SAME session-level aggregation heart
+            # rate already gets, and for the same reason. metrics['rr'] is the
+            # latest single frame's estimate; feeding that to
+            # core.clinical.assess() meant the tachypnea threshold (RR > 20,
+            # which combines with tachycardia into the Compensated Shock flag)
+            # was decided by one instant of the noisiest channel this engine
+            # produces, while HR got a median over the whole session.
+            #
+            # Measured on BIDMC (scripts/validate_rr_bidmc.py, 53 recordings,
+            # human-annotated breaths): per-window MAE 3.09 br/min vs.
+            # session-level MAE 2.14 (median 0.34). Aggregating is worth ~1
+            # br/min of accuracy on a threshold that sits at 20.
+            session_rr = _median_iqr_filtered(rr_history) if len(rr_history) >= 3 else None
+            final_rr = session_rr if session_rr is not None else metrics.get('rr', 0)
+
             return {
                 'success': True,
                 'bpm': round(final_bpm, 1),
@@ -94,7 +113,9 @@ def get_vitals_dict(video_path: str) -> dict:
                 'confidence': metrics.get('confidence', 0),
                 'sqi': metrics.get('sqi', metrics.get('confidence', 0)),
                 'stability': metrics.get('stability', 0),
-                'rr': metrics.get('rr', 0),
+                'rr': round(final_rr, 1) if final_rr else 0,
+                'rr_instantaneous': metrics.get('rr', 0),
+                'rr_readings': len(rr_history),
                 'rr_confidence': metrics.get('rr_confidence', 0),
                 'hrv': metrics.get('hrv', 0),
                 'stress_index': metrics.get('stress_index', 0),

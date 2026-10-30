@@ -39,8 +39,8 @@ def _load_correction_model(path):
     scripts/train_correction_model.py --save-final). Cached at module level
     so a batch validation run over many videos doesn't reload it per file."""
     if path not in _correction_model_cache:
-        import joblib
-        _correction_model_cache[path] = joblib.load(path)
+        from core.ml_compat import load_joblib_compat
+        _correction_model_cache[path] = load_joblib_compat(path)
     return _correction_model_cache[path]
 
 
@@ -239,17 +239,40 @@ def analyze_video_complete(video_path, process_stride: int = 1, correction_model
         # don't null out a perfectly good final reading.
         # Threshold matches core/clinical.py's RR_CONFIDENCE_LOW (30%) — see
         # web/routes.py's identical gate for why 10% was too permissive.
-        rr_readings_valid = [r for r in recent_readings if r['rr'] > 0 and r['rr_confidence'] >= 30]
-        rr_valid = [r['rr'] for r in rr_readings_valid]
-        rr_conf_valid = [r['rr_confidence'] for r in rr_readings_valid]
+        # final_rr comes from get_final_summary() for exactly the same reason
+        # final_bpm does (see the long comment above): a "mean of the last 10
+        # readings" is a DIFFERENT algorithm from the engine's own
+        # IQR-filtered median over its full admitted rr_history, and having
+        # two disagreeing definitions of one safety-relevant number is its own
+        # bug. This path used to use the mean-of-last-10 form for RR even
+        # after HR had been fixed — so RR still had the flaw HR no longer did.
+        #
+        # It also matters much more now than it used to: RR is estimated over
+        # a 60 s window and updated at _RR_UPDATE_HZ, so the last 10 readings
+        # can easily span only the final couple of seconds of a clip, whereas
+        # the session median reflects the whole recording. Measured on BIDMC,
+        # session-level aggregation is worth more than 2x on MAE
+        # (2.89 -> 1.37 br/min) — see scripts/validate_rr_bidmc.py.
+        final_rr = summary.get('final_rr')
+        if final_rr is None:
+            # Engine had too few confident RR readings to form a median. Do
+            # NOT silently substitute a noisier estimate — 0.0 is the
+            # established "not measured" signal here, and
+            # core.clinical.assess() handles rr=0 correctly by assessing on
+            # heart rate alone.
+            final_rr = 0.0
+
+        # Confidence is aggregated over every confident reading in the
+        # session (not just the tail), to match the fact that final_rr is now
+        # a whole-session median rather than a tail average.
+        rr_conf_valid = [r['rr_confidence'] for r in bpm_readings
+                         if r['rr'] > 0 and r['rr_confidence'] >= 30]
         hrv_valid = [r['hrv'] for r in recent_readings if r['hrv'] > 0]
         stress_valid = [r['stress_index'] for r in recent_readings if r['stress_index'] > 0]
 
-        final_rr = round(float(np.mean(rr_valid)), 1) if rr_valid else 0.0
-        # Aggregate rr_confidence over the SAME readings actually averaged
-        # into final_rr, not all recent_readings — so a downstream consumer
-        # (core.clinical.assess) can tell how trustworthy final_rr really is,
-        # instead of assuming it's fully reliable by default.
+        # Aggregate rr_confidence over the SAME readings that fed final_rr,
+        # so a downstream consumer (core.clinical.assess) can tell how
+        # trustworthy final_rr really is instead of assuming it's reliable.
         final_rr_confidence = round(float(np.mean(rr_conf_valid)), 1) if rr_conf_valid else 0.0
         final_hrv = round(float(np.mean(hrv_valid)), 1) if hrv_valid else 0.0
         final_stress = round(float(np.mean(stress_valid)), 1) if stress_valid else 0.0

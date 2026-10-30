@@ -18,8 +18,9 @@ import argparse
 import sys
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 
-sys.path.insert(0, ".")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from web.neon_db import init_db, save_patient_record, clear_all_patients
 

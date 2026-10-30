@@ -1,0 +1,970 @@
+{
+ "welcome": {
+  "text": "Hello, and welcome. I'm going to take a quick, contactless health check. It takes about a minute and a half, and you won't need to touch anything.",
+  "when": "session start"
+ },
+ "ask_name": {
+  "text": "To begin, could you please tell me your name?",
+  "when": "after welcome"
+ },
+ "name_retry": {
+  "text": "Sorry, I didn't quite catch that. Could you say your name once more?",
+  "when": "STT empty/low confidence, 1st time"
+ },
+ "name_type": {
+  "text": "No problem. You can type your name on the screen instead.",
+  "when": "STT failed twice / mic unavailable"
+ },
+ "name_confirm_q": {
+  "text": "Did I get that right?",
+  "when": "after showing the heard name on screen"
+ },
+ "name_thanks": {
+  "text": "Thank you. Lovely to meet you.",
+  "when": "name confirmed"
+ },
+ "settle": {
+  "text": "Let's get you comfortable. Please sit upright and look at the screen.",
+  "when": "start of positioning"
+ },
+ "no_face": {
+  "text": "I can't see your face just yet. Could you look towards the camera, please?",
+  "when": "face not detected"
+ },
+ "closer": {
+  "text": "A little closer, please.",
+  "when": "face too small"
+ },
+ "farther": {
+  "text": "Could you move back just a little?",
+  "when": "face too large"
+ },
+ "move_left": {
+  "text": "Please move a little to your left.",
+  "when": "face off-centre (CHECK mirror direction at integration)"
+ },
+ "move_right": {
+  "text": "Please move a little to your right.",
+  "when": "face off-centre (CHECK mirror direction at integration)"
+ },
+ "keep_in_circle": {
+  "text": "Please keep your face inside the circle.",
+  "when": "drifting out of guide oval"
+ },
+ "perfect": {
+  "text": "Perfect. Hold just like that.",
+  "when": "position good"
+ },
+ "more_light": {
+  "text": "It's a little dark here. Could you face a light, or move somewhere brighter?",
+  "when": "lux < 50"
+ },
+ "too_bright": {
+  "text": "It's quite bright. Try turning a little away from the light.",
+  "when": "lux > 210"
+ },
+ "hold_still": {
+  "text": "Please try to stay as still as you can.",
+  "when": "motion above threshold"
+ },
+ "stay_quiet": {
+  "text": "Please try not to talk during the scan. Just breathe naturally.",
+  "when": "speech/mouth motion detected"
+ },
+ "remove_cover": {
+  "text": "If you're wearing a mask or covering your face, please take it off for the scan.",
+  "when": "face found but low signal quality"
+ },
+ "count_in": {
+  "text": "I'll start in just a moment.",
+  "when": "before countdown"
+ },
+ "three": {
+  "text": "Three.",
+  "when": "countdown"
+ },
+ "two": {
+  "text": "Two.",
+  "when": "countdown"
+ },
+ "one": {
+  "text": "One.",
+  "when": "countdown"
+ },
+ "scan_start": {
+  "text": "Starting now. Breathe normally, and stay as still as you can.",
+  "when": "scan begins"
+ },
+ "mid_1": {
+  "text": "You're doing really well. Just keep breathing naturally.",
+  "when": "~25 s"
+ },
+ "mid_2": {
+  "text": "Nice and steady. You're doing great.",
+  "when": "~50 s"
+ },
+ "mid_3": {
+  "text": "Not much longer now.",
+  "when": "~70 s"
+ },
+ "final_secs": {
+  "text": "Just a few more seconds.",
+  "when": "~last 10 s"
+ },
+ "done": {
+  "text": "All done. Thank you so much for your patience.",
+  "when": "scan complete"
+ },
+ "handoff_normal": {
+  "text": "A member of our team will be with you shortly.",
+  "when": "routine result"
+ },
+ "handoff_urgent": {
+  "text": "Please stay where you are. A member of our team is on their way to you.",
+  "when": "high-priority / shock flag"
+ },
+ "goodbye": {
+  "text": "Take care.",
+  "when": "end"
+ },
+ "name_check": {
+  "text": "Please check your name on the screen. Is that right?",
+  "when": "name heard, waiting for yes/no"
+ },
+ "ask_age": {
+  "text": "Thank you. And how old are you?",
+  "when": "after name confirmed"
+ },
+ "age_retry": {
+  "text": "Sorry, I didn't catch your age. Could you say it once more?",
+  "when": "STT could not parse an age"
+ },
+ "age_type": {
+  "text": "No problem. You can enter your age on the screen.",
+  "when": "age fallback to typing"
+ },
+ "ask_sex": {
+  "text": "Are you male, female, or would you rather not say?",
+  "when": "after age"
+ },
+ "sex_type": {
+  "text": "No problem. You can choose on the screen.",
+  "when": "sex fallback to tapping"
+ },
+ "ask_complaint": {
+  "text": "Now, in your own words, what brings you in today?",
+  "when": "after sex"
+ },
+ "complaint_thanks": {
+  "text": "Thank you. I've noted that down.",
+  "when": "complaint captured"
+ },
+ "complaint_skip": {
+  "text": "That's fine. You can tell the nurse when you're called.",
+  "when": "complaint skipped/failed"
+ },
+ "go_ahead": {
+  "text": "Go ahead, I'm listening.",
+  "when": "mic opens"
+ },
+ "tap_or_say": {
+  "text": "You can tap the screen, or just say it.",
+  "when": "gentle hint on confirm steps"
+ },
+ "please_take_seat": {
+  "text": "Please take a seat. We'll call your number when it's your turn.",
+  "when": "after token"
+ },
+ "stay_seated": {
+  "text": "Please stay seated and keep an eye on the screen. It will show when it's your turn.",
+  "when": "after token"
+ },
+ "wait_soon": {
+  "text": "You should be seen very shortly.",
+  "when": "est wait <= 5 min"
+ },
+ "wait_long": {
+  "text": "It may be longer than two hours. Please ask at the desk if you'd like an update.",
+  "when": "est wait > 120 min"
+ },
+ "no_token": {
+  "text": "I couldn't print your number, but you're registered. Please tell the desk your name.",
+  "when": "DB/token failure"
+ },
+ "weak_signal": {
+  "text": "I'm sorry, I couldn't get a clear reading. Shall we try once more?",
+  "when": "scan produced no usable signal"
+ },
+ "retry": {
+  "text": "Let's try that again. Please look at the screen and stay still.",
+  "when": "retry"
+ },
+ "camera_error": {
+  "text": "I can't reach the camera right now. Please let a member of staff know.",
+  "when": "camera failure"
+ },
+ "mic_error": {
+  "text": "I can't hear you at the moment. You can type your name on the screen instead.",
+  "when": "mic denied/unavailable"
+ },
+ "tok_A001": {
+  "text": "Your number is A, zero, zero, one.",
+  "when": "token A-001"
+ },
+ "tok_A002": {
+  "text": "Your number is A, zero, zero, two.",
+  "when": "token A-002"
+ },
+ "tok_A003": {
+  "text": "Your number is A, zero, zero, three.",
+  "when": "token A-003"
+ },
+ "tok_A004": {
+  "text": "Your number is A, zero, zero, four.",
+  "when": "token A-004"
+ },
+ "tok_A005": {
+  "text": "Your number is A, zero, zero, five.",
+  "when": "token A-005"
+ },
+ "tok_A006": {
+  "text": "Your number is A, zero, zero, six.",
+  "when": "token A-006"
+ },
+ "tok_A007": {
+  "text": "Your number is A, zero, zero, seven.",
+  "when": "token A-007"
+ },
+ "tok_A008": {
+  "text": "Your number is A, zero, zero, eight.",
+  "when": "token A-008"
+ },
+ "tok_A009": {
+  "text": "Your number is A, zero, zero, nine.",
+  "when": "token A-009"
+ },
+ "tok_A010": {
+  "text": "Your number is A, zero, one, zero.",
+  "when": "token A-010"
+ },
+ "tok_A011": {
+  "text": "Your number is A, zero, one, one.",
+  "when": "token A-011"
+ },
+ "tok_A012": {
+  "text": "Your number is A, zero, one, two.",
+  "when": "token A-012"
+ },
+ "tok_A013": {
+  "text": "Your number is A, zero, one, three.",
+  "when": "token A-013"
+ },
+ "tok_A014": {
+  "text": "Your number is A, zero, one, four.",
+  "when": "token A-014"
+ },
+ "tok_A015": {
+  "text": "Your number is A, zero, one, five.",
+  "when": "token A-015"
+ },
+ "tok_A016": {
+  "text": "Your number is A, zero, one, six.",
+  "when": "token A-016"
+ },
+ "tok_A017": {
+  "text": "Your number is A, zero, one, seven.",
+  "when": "token A-017"
+ },
+ "tok_A018": {
+  "text": "Your number is A, zero, one, eight.",
+  "when": "token A-018"
+ },
+ "tok_A019": {
+  "text": "Your number is A, zero, one, nine.",
+  "when": "token A-019"
+ },
+ "tok_A020": {
+  "text": "Your number is A, zero, two, zero.",
+  "when": "token A-020"
+ },
+ "tok_A021": {
+  "text": "Your number is A, zero, two, one.",
+  "when": "token A-021"
+ },
+ "tok_A022": {
+  "text": "Your number is A, zero, two, two.",
+  "when": "token A-022"
+ },
+ "tok_A023": {
+  "text": "Your number is A, zero, two, three.",
+  "when": "token A-023"
+ },
+ "tok_A024": {
+  "text": "Your number is A, zero, two, four.",
+  "when": "token A-024"
+ },
+ "tok_A025": {
+  "text": "Your number is A, zero, two, five.",
+  "when": "token A-025"
+ },
+ "tok_A026": {
+  "text": "Your number is A, zero, two, six.",
+  "when": "token A-026"
+ },
+ "tok_A027": {
+  "text": "Your number is A, zero, two, seven.",
+  "when": "token A-027"
+ },
+ "tok_A028": {
+  "text": "Your number is A, zero, two, eight.",
+  "when": "token A-028"
+ },
+ "tok_A029": {
+  "text": "Your number is A, zero, two, nine.",
+  "when": "token A-029"
+ },
+ "tok_A030": {
+  "text": "Your number is A, zero, three, zero.",
+  "when": "token A-030"
+ },
+ "tok_A031": {
+  "text": "Your number is A, zero, three, one.",
+  "when": "token A-031"
+ },
+ "tok_A032": {
+  "text": "Your number is A, zero, three, two.",
+  "when": "token A-032"
+ },
+ "tok_A033": {
+  "text": "Your number is A, zero, three, three.",
+  "when": "token A-033"
+ },
+ "tok_A034": {
+  "text": "Your number is A, zero, three, four.",
+  "when": "token A-034"
+ },
+ "tok_A035": {
+  "text": "Your number is A, zero, three, five.",
+  "when": "token A-035"
+ },
+ "tok_A036": {
+  "text": "Your number is A, zero, three, six.",
+  "when": "token A-036"
+ },
+ "tok_A037": {
+  "text": "Your number is A, zero, three, seven.",
+  "when": "token A-037"
+ },
+ "tok_A038": {
+  "text": "Your number is A, zero, three, eight.",
+  "when": "token A-038"
+ },
+ "tok_A039": {
+  "text": "Your number is A, zero, three, nine.",
+  "when": "token A-039"
+ },
+ "tok_A040": {
+  "text": "Your number is A, zero, four, zero.",
+  "when": "token A-040"
+ },
+ "tok_A041": {
+  "text": "Your number is A, zero, four, one.",
+  "when": "token A-041"
+ },
+ "tok_A042": {
+  "text": "Your number is A, zero, four, two.",
+  "when": "token A-042"
+ },
+ "tok_A043": {
+  "text": "Your number is A, zero, four, three.",
+  "when": "token A-043"
+ },
+ "tok_A044": {
+  "text": "Your number is A, zero, four, four.",
+  "when": "token A-044"
+ },
+ "tok_A045": {
+  "text": "Your number is A, zero, four, five.",
+  "when": "token A-045"
+ },
+ "tok_A046": {
+  "text": "Your number is A, zero, four, six.",
+  "when": "token A-046"
+ },
+ "tok_A047": {
+  "text": "Your number is A, zero, four, seven.",
+  "when": "token A-047"
+ },
+ "tok_A048": {
+  "text": "Your number is A, zero, four, eight.",
+  "when": "token A-048"
+ },
+ "tok_A049": {
+  "text": "Your number is A, zero, four, nine.",
+  "when": "token A-049"
+ },
+ "tok_A050": {
+  "text": "Your number is A, zero, five, zero.",
+  "when": "token A-050"
+ },
+ "tok_A051": {
+  "text": "Your number is A, zero, five, one.",
+  "when": "token A-051"
+ },
+ "tok_A052": {
+  "text": "Your number is A, zero, five, two.",
+  "when": "token A-052"
+ },
+ "tok_A053": {
+  "text": "Your number is A, zero, five, three.",
+  "when": "token A-053"
+ },
+ "tok_A054": {
+  "text": "Your number is A, zero, five, four.",
+  "when": "token A-054"
+ },
+ "tok_A055": {
+  "text": "Your number is A, zero, five, five.",
+  "when": "token A-055"
+ },
+ "tok_A056": {
+  "text": "Your number is A, zero, five, six.",
+  "when": "token A-056"
+ },
+ "tok_A057": {
+  "text": "Your number is A, zero, five, seven.",
+  "when": "token A-057"
+ },
+ "tok_A058": {
+  "text": "Your number is A, zero, five, eight.",
+  "when": "token A-058"
+ },
+ "tok_A059": {
+  "text": "Your number is A, zero, five, nine.",
+  "when": "token A-059"
+ },
+ "tok_A060": {
+  "text": "Your number is A, zero, six, zero.",
+  "when": "token A-060"
+ },
+ "tok_A061": {
+  "text": "Your number is A, zero, six, one.",
+  "when": "token A-061"
+ },
+ "tok_A062": {
+  "text": "Your number is A, zero, six, two.",
+  "when": "token A-062"
+ },
+ "tok_A063": {
+  "text": "Your number is A, zero, six, three.",
+  "when": "token A-063"
+ },
+ "tok_A064": {
+  "text": "Your number is A, zero, six, four.",
+  "when": "token A-064"
+ },
+ "tok_A065": {
+  "text": "Your number is A, zero, six, five.",
+  "when": "token A-065"
+ },
+ "tok_A066": {
+  "text": "Your number is A, zero, six, six.",
+  "when": "token A-066"
+ },
+ "tok_A067": {
+  "text": "Your number is A, zero, six, seven.",
+  "when": "token A-067"
+ },
+ "tok_A068": {
+  "text": "Your number is A, zero, six, eight.",
+  "when": "token A-068"
+ },
+ "tok_A069": {
+  "text": "Your number is A, zero, six, nine.",
+  "when": "token A-069"
+ },
+ "tok_A070": {
+  "text": "Your number is A, zero, seven, zero.",
+  "when": "token A-070"
+ },
+ "tok_A071": {
+  "text": "Your number is A, zero, seven, one.",
+  "when": "token A-071"
+ },
+ "tok_A072": {
+  "text": "Your number is A, zero, seven, two.",
+  "when": "token A-072"
+ },
+ "tok_A073": {
+  "text": "Your number is A, zero, seven, three.",
+  "when": "token A-073"
+ },
+ "tok_A074": {
+  "text": "Your number is A, zero, seven, four.",
+  "when": "token A-074"
+ },
+ "tok_A075": {
+  "text": "Your number is A, zero, seven, five.",
+  "when": "token A-075"
+ },
+ "tok_A076": {
+  "text": "Your number is A, zero, seven, six.",
+  "when": "token A-076"
+ },
+ "tok_A077": {
+  "text": "Your number is A, zero, seven, seven.",
+  "when": "token A-077"
+ },
+ "tok_A078": {
+  "text": "Your number is A, zero, seven, eight.",
+  "when": "token A-078"
+ },
+ "tok_A079": {
+  "text": "Your number is A, zero, seven, nine.",
+  "when": "token A-079"
+ },
+ "tok_A080": {
+  "text": "Your number is A, zero, eight, zero.",
+  "when": "token A-080"
+ },
+ "tok_A081": {
+  "text": "Your number is A, zero, eight, one.",
+  "when": "token A-081"
+ },
+ "tok_A082": {
+  "text": "Your number is A, zero, eight, two.",
+  "when": "token A-082"
+ },
+ "tok_A083": {
+  "text": "Your number is A, zero, eight, three.",
+  "when": "token A-083"
+ },
+ "tok_A084": {
+  "text": "Your number is A, zero, eight, four.",
+  "when": "token A-084"
+ },
+ "tok_A085": {
+  "text": "Your number is A, zero, eight, five.",
+  "when": "token A-085"
+ },
+ "tok_A086": {
+  "text": "Your number is A, zero, eight, six.",
+  "when": "token A-086"
+ },
+ "tok_A087": {
+  "text": "Your number is A, zero, eight, seven.",
+  "when": "token A-087"
+ },
+ "tok_A088": {
+  "text": "Your number is A, zero, eight, eight.",
+  "when": "token A-088"
+ },
+ "tok_A089": {
+  "text": "Your number is A, zero, eight, nine.",
+  "when": "token A-089"
+ },
+ "tok_A090": {
+  "text": "Your number is A, zero, nine, zero.",
+  "when": "token A-090"
+ },
+ "tok_A091": {
+  "text": "Your number is A, zero, nine, one.",
+  "when": "token A-091"
+ },
+ "tok_A092": {
+  "text": "Your number is A, zero, nine, two.",
+  "when": "token A-092"
+ },
+ "tok_A093": {
+  "text": "Your number is A, zero, nine, three.",
+  "when": "token A-093"
+ },
+ "tok_A094": {
+  "text": "Your number is A, zero, nine, four.",
+  "when": "token A-094"
+ },
+ "tok_A095": {
+  "text": "Your number is A, zero, nine, five.",
+  "when": "token A-095"
+ },
+ "tok_A096": {
+  "text": "Your number is A, zero, nine, six.",
+  "when": "token A-096"
+ },
+ "tok_A097": {
+  "text": "Your number is A, zero, nine, seven.",
+  "when": "token A-097"
+ },
+ "tok_A098": {
+  "text": "Your number is A, zero, nine, eight.",
+  "when": "token A-098"
+ },
+ "tok_A099": {
+  "text": "Your number is A, zero, nine, nine.",
+  "when": "token A-099"
+ },
+ "tok_A100": {
+  "text": "Your number is A, one, zero, zero.",
+  "when": "token A-100"
+ },
+ "tok_A101": {
+  "text": "Your number is A, one, zero, one.",
+  "when": "token A-101"
+ },
+ "tok_A102": {
+  "text": "Your number is A, one, zero, two.",
+  "when": "token A-102"
+ },
+ "tok_A103": {
+  "text": "Your number is A, one, zero, three.",
+  "when": "token A-103"
+ },
+ "tok_A104": {
+  "text": "Your number is A, one, zero, four.",
+  "when": "token A-104"
+ },
+ "tok_A105": {
+  "text": "Your number is A, one, zero, five.",
+  "when": "token A-105"
+ },
+ "tok_A106": {
+  "text": "Your number is A, one, zero, six.",
+  "when": "token A-106"
+ },
+ "tok_A107": {
+  "text": "Your number is A, one, zero, seven.",
+  "when": "token A-107"
+ },
+ "tok_A108": {
+  "text": "Your number is A, one, zero, eight.",
+  "when": "token A-108"
+ },
+ "tok_A109": {
+  "text": "Your number is A, one, zero, nine.",
+  "when": "token A-109"
+ },
+ "tok_A110": {
+  "text": "Your number is A, one, one, zero.",
+  "when": "token A-110"
+ },
+ "tok_A111": {
+  "text": "Your number is A, one, one, one.",
+  "when": "token A-111"
+ },
+ "tok_A112": {
+  "text": "Your number is A, one, one, two.",
+  "when": "token A-112"
+ },
+ "tok_A113": {
+  "text": "Your number is A, one, one, three.",
+  "when": "token A-113"
+ },
+ "tok_A114": {
+  "text": "Your number is A, one, one, four.",
+  "when": "token A-114"
+ },
+ "tok_A115": {
+  "text": "Your number is A, one, one, five.",
+  "when": "token A-115"
+ },
+ "tok_A116": {
+  "text": "Your number is A, one, one, six.",
+  "when": "token A-116"
+ },
+ "tok_A117": {
+  "text": "Your number is A, one, one, seven.",
+  "when": "token A-117"
+ },
+ "tok_A118": {
+  "text": "Your number is A, one, one, eight.",
+  "when": "token A-118"
+ },
+ "tok_A119": {
+  "text": "Your number is A, one, one, nine.",
+  "when": "token A-119"
+ },
+ "tok_A120": {
+  "text": "Your number is A, one, two, zero.",
+  "when": "token A-120"
+ },
+ "tok_A121": {
+  "text": "Your number is A, one, two, one.",
+  "when": "token A-121"
+ },
+ "tok_A122": {
+  "text": "Your number is A, one, two, two.",
+  "when": "token A-122"
+ },
+ "tok_A123": {
+  "text": "Your number is A, one, two, three.",
+  "when": "token A-123"
+ },
+ "tok_A124": {
+  "text": "Your number is A, one, two, four.",
+  "when": "token A-124"
+ },
+ "tok_A125": {
+  "text": "Your number is A, one, two, five.",
+  "when": "token A-125"
+ },
+ "tok_A126": {
+  "text": "Your number is A, one, two, six.",
+  "when": "token A-126"
+ },
+ "tok_A127": {
+  "text": "Your number is A, one, two, seven.",
+  "when": "token A-127"
+ },
+ "tok_A128": {
+  "text": "Your number is A, one, two, eight.",
+  "when": "token A-128"
+ },
+ "tok_A129": {
+  "text": "Your number is A, one, two, nine.",
+  "when": "token A-129"
+ },
+ "tok_A130": {
+  "text": "Your number is A, one, three, zero.",
+  "when": "token A-130"
+ },
+ "tok_A131": {
+  "text": "Your number is A, one, three, one.",
+  "when": "token A-131"
+ },
+ "tok_A132": {
+  "text": "Your number is A, one, three, two.",
+  "when": "token A-132"
+ },
+ "tok_A133": {
+  "text": "Your number is A, one, three, three.",
+  "when": "token A-133"
+ },
+ "tok_A134": {
+  "text": "Your number is A, one, three, four.",
+  "when": "token A-134"
+ },
+ "tok_A135": {
+  "text": "Your number is A, one, three, five.",
+  "when": "token A-135"
+ },
+ "tok_A136": {
+  "text": "Your number is A, one, three, six.",
+  "when": "token A-136"
+ },
+ "tok_A137": {
+  "text": "Your number is A, one, three, seven.",
+  "when": "token A-137"
+ },
+ "tok_A138": {
+  "text": "Your number is A, one, three, eight.",
+  "when": "token A-138"
+ },
+ "tok_A139": {
+  "text": "Your number is A, one, three, nine.",
+  "when": "token A-139"
+ },
+ "tok_A140": {
+  "text": "Your number is A, one, four, zero.",
+  "when": "token A-140"
+ },
+ "tok_A141": {
+  "text": "Your number is A, one, four, one.",
+  "when": "token A-141"
+ },
+ "tok_A142": {
+  "text": "Your number is A, one, four, two.",
+  "when": "token A-142"
+ },
+ "tok_A143": {
+  "text": "Your number is A, one, four, three.",
+  "when": "token A-143"
+ },
+ "tok_A144": {
+  "text": "Your number is A, one, four, four.",
+  "when": "token A-144"
+ },
+ "tok_A145": {
+  "text": "Your number is A, one, four, five.",
+  "when": "token A-145"
+ },
+ "tok_A146": {
+  "text": "Your number is A, one, four, six.",
+  "when": "token A-146"
+ },
+ "tok_A147": {
+  "text": "Your number is A, one, four, seven.",
+  "when": "token A-147"
+ },
+ "tok_A148": {
+  "text": "Your number is A, one, four, eight.",
+  "when": "token A-148"
+ },
+ "tok_A149": {
+  "text": "Your number is A, one, four, nine.",
+  "when": "token A-149"
+ },
+ "tok_A150": {
+  "text": "Your number is A, one, five, zero.",
+  "when": "token A-150"
+ },
+ "wait_5": {
+  "text": "Your estimated wait is about 5 minutes.",
+  "when": "est wait 5 min"
+ },
+ "wait_10": {
+  "text": "Your estimated wait is about 10 minutes.",
+  "when": "est wait 10 min"
+ },
+ "wait_15": {
+  "text": "Your estimated wait is about 15 minutes.",
+  "when": "est wait 15 min"
+ },
+ "wait_20": {
+  "text": "Your estimated wait is about 20 minutes.",
+  "when": "est wait 20 min"
+ },
+ "wait_25": {
+  "text": "Your estimated wait is about 25 minutes.",
+  "when": "est wait 25 min"
+ },
+ "wait_30": {
+  "text": "Your estimated wait is about 30 minutes.",
+  "when": "est wait 30 min"
+ },
+ "wait_35": {
+  "text": "Your estimated wait is about 35 minutes.",
+  "when": "est wait 35 min"
+ },
+ "wait_40": {
+  "text": "Your estimated wait is about 40 minutes.",
+  "when": "est wait 40 min"
+ },
+ "wait_45": {
+  "text": "Your estimated wait is about 45 minutes.",
+  "when": "est wait 45 min"
+ },
+ "wait_50": {
+  "text": "Your estimated wait is about 50 minutes.",
+  "when": "est wait 50 min"
+ },
+ "wait_55": {
+  "text": "Your estimated wait is about 55 minutes.",
+  "when": "est wait 55 min"
+ },
+ "wait_60": {
+  "text": "Your estimated wait is about 60 minutes.",
+  "when": "est wait 60 min"
+ },
+ "wait_65": {
+  "text": "Your estimated wait is about 65 minutes.",
+  "when": "est wait 65 min"
+ },
+ "wait_70": {
+  "text": "Your estimated wait is about 70 minutes.",
+  "when": "est wait 70 min"
+ },
+ "wait_75": {
+  "text": "Your estimated wait is about 75 minutes.",
+  "when": "est wait 75 min"
+ },
+ "wait_80": {
+  "text": "Your estimated wait is about 80 minutes.",
+  "when": "est wait 80 min"
+ },
+ "wait_85": {
+  "text": "Your estimated wait is about 85 minutes.",
+  "when": "est wait 85 min"
+ },
+ "wait_90": {
+  "text": "Your estimated wait is about 90 minutes.",
+  "when": "est wait 90 min"
+ },
+ "wait_95": {
+  "text": "Your estimated wait is about 95 minutes.",
+  "when": "est wait 95 min"
+ },
+ "wait_100": {
+  "text": "Your estimated wait is about 100 minutes.",
+  "when": "est wait 100 min"
+ },
+ "wait_105": {
+  "text": "Your estimated wait is about 105 minutes.",
+  "when": "est wait 105 min"
+ },
+ "wait_110": {
+  "text": "Your estimated wait is about 110 minutes.",
+  "when": "est wait 110 min"
+ },
+ "wait_115": {
+  "text": "Your estimated wait is about 115 minutes.",
+  "when": "est wait 115 min"
+ },
+ "wait_120": {
+  "text": "Your estimated wait is about 120 minutes.",
+  "when": "est wait 120 min"
+ },
+ "ahead_0": {
+  "text": "There is nobody ahead of you.",
+  "when": "0 ahead"
+ },
+ "ahead_1": {
+  "text": "There is one person ahead of you.",
+  "when": "1 ahead"
+ },
+ "ahead_2": {
+  "text": "There are 2 people ahead of you.",
+  "when": "2 ahead"
+ },
+ "ahead_3": {
+  "text": "There are 3 people ahead of you.",
+  "when": "3 ahead"
+ },
+ "ahead_4": {
+  "text": "There are 4 people ahead of you.",
+  "when": "4 ahead"
+ },
+ "ahead_5": {
+  "text": "There are 5 people ahead of you.",
+  "when": "5 ahead"
+ },
+ "ahead_6": {
+  "text": "There are 6 people ahead of you.",
+  "when": "6 ahead"
+ },
+ "ahead_7": {
+  "text": "There are 7 people ahead of you.",
+  "when": "7 ahead"
+ },
+ "ahead_8": {
+  "text": "There are 8 people ahead of you.",
+  "when": "8 ahead"
+ },
+ "ahead_9": {
+  "text": "There are 9 people ahead of you.",
+  "when": "9 ahead"
+ },
+ "ahead_10": {
+  "text": "There are 10 people ahead of you.",
+  "when": "10 ahead"
+ },
+ "ahead_11": {
+  "text": "There are 11 people ahead of you.",
+  "when": "11 ahead"
+ },
+ "ahead_12": {
+  "text": "There are 12 people ahead of you.",
+  "when": "12 ahead"
+ },
+ "ahead_13": {
+  "text": "There are 13 people ahead of you.",
+  "when": "13 ahead"
+ },
+ "ahead_14": {
+  "text": "There are 14 people ahead of you.",
+  "when": "14 ahead"
+ },
+ "ahead_15": {
+  "text": "There are 15 people ahead of you.",
+  "when": "15 ahead"
+ }
+}

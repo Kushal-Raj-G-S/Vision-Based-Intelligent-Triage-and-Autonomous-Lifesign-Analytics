@@ -13,10 +13,17 @@ import threading
 # Import the web package which holds our shared state and configurations
 import web
 from core.camera import find_available_cameras
-from web.neon_db import init_db, save_patient_record, get_all_patients, clear_all_patients
+from web.neon_db import (init_db, save_patient_record, get_all_patients, clear_all_patients,
+                         next_token, set_patient_status, update_narrative,
+                         save_new_patient, get_waiting_patients, warm_pool)
 
 # Initialize the Postgres DB on startup
 init_db()
+warm_pool()
+
+# Start ranking the AI models at boot, so the first patient never waits for the probe.
+from agents import llm_pool as _llm_pool
+_llm_pool.start_background_probe()
 
 # Setup decorator shortcuts
 app = web.app
@@ -78,6 +85,29 @@ def release_camera_hardware():
         print(f"[APP] Camera release error: {e}")
 
 
+def _median_iqr_filtered(values):
+    """Same outlier-robust aggregation agents/tools.py::get_vitals_dict and
+    scripts/analyze_video.py already use for the clinical/triage numbers —
+    duplicated here (not imported) to match this codebase's existing
+    pattern of keeping this small helper local to each call site.
+
+    Used so the LIVE dashboard display (web.session.metrics, read by
+    /status and generate_report) shows the same validated, session-
+    aggregated number the clinical engine actually reasons about, instead
+    of a single noisy instantaneous reading — see the live-vs-triage BPM
+    discrepancy this was written to fix (dashboard showed 88.4 while the
+    triage engine used a validated 50 for the same session)."""
+    if not values:
+        return None
+    sorted_v = sorted(values)
+    n = len(sorted_v)
+    q1, q3 = sorted_v[n // 4], sorted_v[(3 * n) // 4]
+    iqr = q3 - q1
+    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    filtered = [v for v in sorted_v if lo <= v <= hi] or sorted_v
+    return stats.median(filtered)
+
+
 def _classify(bpm):
     """
     Clinical heart rate classification (resting, adult) aligned with project PDF:
@@ -113,12 +143,27 @@ def _classify_respiratory_rate(rr):
     return 'TACHYPNEA'
 
 
-def generate_frames():
-    """MJPEG generator. Runs for the lifetime of the /video_feed request."""
+def _face_box_payload():
+    """Smoothed face box as fractions of the frame (x, y, w, h in 0..1), in the
+    camera's RAW (un-mirrored) orientation, or None when no face is visible.
+    The kiosk mirrors its preview, so it converts x -> 1 - (x + w)."""
+    b = getattr(web.camera, 'last_face_box', None)
+    if not b:
+        return None
+    x, y, w, h, fw, fh = b
+    if fw <= 0 or fh <= 0:
+        return None
+    return {'x': round(x / fw, 3), 'y': round(y / fh, 3),
+            'w': round(w / fw, 3), 'h': round(h / fh, 3)}
+
+
+def generate_frames(clean: bool = False, pulse: bool = False):
+    """MJPEG generator. Runs for the lifetime of the /video_feed request.
+    clean=True streams frames without the debug face/ROI rectangles (kiosk)."""
     calibration_done = False
 
     while not web.session.stop_event.is_set():
-        frame_bytes, roi_data, is_moving, motion_delta = web.camera.get_frame()
+        frame_bytes, roi_data, is_moving, motion_delta = web.camera.get_frame(annotate=not clean, pulse=pulse)
 
         # ── Video file ended ─────────────────────────────────────────
         if frame_bytes is None:
@@ -145,6 +190,10 @@ def generate_frames():
                 lux = 0
             web.session.metrics['estimated_lux'] = lux
             web.session.metrics['motion_delta']  = int(motion_delta)
+            web.session.metrics['face_box']      = _face_box_payload()
+            # False while the camera is showing its idle placeholder (no live camera / video loaded):
+            # lets the dashboard cover that placeholder with a proper empty state.
+            web.session.metrics['has_source']    = not getattr(web.camera, 'dummy_mode', False)
 
             # Playback progress for an uploaded video file — display only,
             # never used by the DSP/clinical pipeline. None for a live
@@ -228,19 +277,62 @@ def generate_frames():
                 if rr_conf < 30:
                     rr_val = 0
 
+                # Display values — the SAME session-aggregated, outlier-
+                # filtered numbers agents/tools.py::get_vitals_dict feeds to
+                # the clinical/triage engine, not the single instantaneous
+                # reading above. Before this, web.session.metrics['bpm']/
+                # ['rr'] carried the raw per-frame value, so the live gauge
+                # and the generated report (both read metrics here) could
+                # show a wildly different number than the ESI/triage result
+                # computed moments later from the same session — observed
+                # live as an 88.4 BPM dashboard card next to a 50 BPM triage
+                # figure for the identical session. bpm_history already
+                # accumulates the raw per-frame values above (line ~200), so
+                # this only changes what's DISPLAYED, not what's recorded.
+                bpm_hist = web.session.bpm_history
+                avg_bpm_disp = (
+                    stats.mean(bpm_hist) if len(bpm_hist) >= 2
+                    else (bpm_hist[-1] if bpm_hist else bpm)
+                )
+                corrected_bpm_disp = (
+                    _median_iqr_filtered(web.session.corrected_bpm_history)
+                    if len(web.session.corrected_bpm_history) >= 3 else None
+                )
+                bpm_display = corrected_bpm_disp if corrected_bpm_disp is not None else avg_bpm_disp
+
+                rr_hist_live = list(getattr(web.rppg_engine, 'rr_history', []) or [])
+                # >=1, not >=3 — every entry in rr_history already
+                # individually cleared _RR_HISTORY_MIN_CONF (30%) to get
+                # there (see core/rppg.py), so showing the median of even
+                # one or two of them is not showing anything the clinical
+                # engine considers unreliable. The >=3 floor stays enforced
+                # separately in agents/tools.py::get_vitals_dict() for the
+                # actual Compensated Shock determination, which legitimately
+                # wants more session-level evidence before acting on it —
+                # this only changes what the LIVE gauge displays while the
+                # session is still running. Without this, the gauge sat on
+                # "--" for nearly the whole session, since RR often only
+                # crosses the >=3 mark in the last few seconds (Finding 10).
+                rr_session_disp = (
+                    _median_iqr_filtered(rr_hist_live) if len(rr_hist_live) >= 1 else None
+                )
+                rr_display = rr_session_disp if rr_session_disp is not None else rr_val
+
                 web.session.metrics = {
-                    'bpm':                  int(bpm) if isinstance(bpm, (int, float)) else 0,
+                    'bpm':                  round(bpm_display, 1) if isinstance(bpm_display, (int, float)) else 0,
+                    'bpm_instant':          int(bpm) if isinstance(bpm, (int, float)) else 0,
                     'confidence':           int(results.get('confidence', 0)),
                     'status':               results.get('status', 'OK'),
                     'snr_db':               results.get('snr_db', 0),
                     'sqi':                  results.get('sqi', 0),
-                    'classification':       _classify(bpm),
+                    'classification':       _classify(bpm_display),
                     'ohi':                  results.get('confidence', 0),
                     'stability':            results.get('stability_score', 0),
                     'stability_indicator':  results.get('stability_indicator', '--'),
-                    'rr':                   rr_val,
+                    'rr':                   round(rr_display, 1) if rr_display else 0,
+                    'rr_instant':           rr_val,
                     'rr_confidence':        rr_conf,
-                    'rr_classification':    _classify_respiratory_rate(rr_val),
+                    'rr_classification':    _classify_respiratory_rate(rr_display),
                     'hrv':                  web.session.last_valid_hrv,
                     'stress_index':         web.session.last_valid_stress,
                     'warnings':             warnings,
@@ -250,6 +342,8 @@ def generate_frames():
                     'is_live':              web.session.is_live_camera,
                     'calibration_done':     True,
                     'face_detected':        roi_data is not None,
+                    'face_box':             _face_box_payload(),
+                    'has_source':           not getattr(web.camera, 'dummy_mode', False),
                     'ppg_signal':           results.get('ppg_signal', [])[-150:],
                     'calibration_progress': 100,
                     'video_current_sec':    video_current_sec,
@@ -289,7 +383,9 @@ def index():
 
 @app.route('/video_feed')
 def video_feed():
-    return Response(generate_frames(),
+    clean = request.args.get('clean', '') in ('1', 'true', 'yes')
+    pulse = request.args.get('pulse', '') in ('1', 'true', 'yes')
+    return Response(generate_frames(clean=clean, pulse=pulse),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
@@ -583,6 +679,53 @@ def reset_camera():
     return jsonify({'success': True, 'message': 'Camera released'})
 
 
+@app.route('/api/scan/begin', methods=['POST'])
+def scan_begin():
+    """Start a CLEAN measurement window without touching the camera: new rPPG
+    engine + cleared histories. The kiosk uses this after positioning, so frames
+    captured while the patient was still moving into place never reach the
+    session medians. (_reset() also rebuilds the camera, which is slower and
+    drops the video stream.)"""
+    from core.rppg import AdvancedRPPG
+    if web.camera is None or web.camera.dummy_mode:
+        return jsonify({'success': False, 'error': 'Camera is not running.'}), 409
+    with web.session.processing_lock:
+        fps = web.camera.get_source_fps(default=30.0)
+        web.rppg_engine = AdvancedRPPG(fps=int(round(fps)), window_size=max(300, int(fps * 10)))
+        web.session.frame_count = 0
+        web.session.start_time = time.time()
+        web.session.bpm_history = []
+        web.session.corrected_bpm_history = []
+        web.session.last_valid_hrv = 0.0
+        web.session.last_valid_stress = 0.0
+        web.session.metrics.update({
+            'bpm': 0, 'status': 'WAITING', 'classification': 'UNKNOWN',
+            'rr': 0, 'rr_confidence': 0, 'rr_classification': '--',
+            'hrv': 0, 'stress_index': 0, 'warnings': [], 'calibration_done': False,
+        })
+    return jsonify({'success': True})
+
+
+STT_URL = os.getenv('STT_URL', 'http://127.0.0.1:5003')
+
+
+@app.route('/api/stt', methods=['POST'])
+def stt_proxy():
+    """Forward a short WAV clip to the local GPU Whisper server (tools/gpu_lab/stt_server.py).
+    503 tells the kiosk to fall back to typing — it must never dead-end a patient."""
+    import requests as _rq
+    audio = request.files.get('audio')
+    if audio is None:
+        return jsonify({'success': False, 'error': 'no audio'}), 400
+    try:
+        r = _rq.post(f"{STT_URL}/transcribe",
+                     files={'audio': ('clip.wav', audio.read(), 'audio/wav')},
+                     data={'hint': request.form.get('hint', '')}, timeout=30)
+        return jsonify(r.json()), r.status_code
+    except Exception as exc:
+        return jsonify({'success': False, 'error': 'stt_unavailable', 'detail': str(exc)[:120]}), 503
+
+
 @app.route('/release_camera', methods=['POST'])
 def release_camera():
     _release_session()
@@ -678,20 +821,27 @@ def chat_api():
             else:
                 messages.append(HumanMessage(content=user_message))
                 
-            primary_llm = ChatNVIDIA(
-                model="meta/llama-3.1-8b-instruct",
-                nvidia_api_key=nvidia_key
-            )
-            fallback_models = [
-                ChatNVIDIA(model="meta/llama-3.3-70b-instruct", nvidia_api_key=nvidia_key),
-                ChatNVIDIA(model="meta/llama-3.1-70b-instruct", nvidia_api_key=nvidia_key),
-                ChatNVIDIA(model="qwen/qwen3.5-122b-a10b", nvidia_api_key=nvidia_key),
-                ChatNVIDIA(model="abacusai/dracarys-llama-3.1-70b-instruct", nvidia_api_key=nvidia_key),
-            ]
-            chat_model = primary_llm.with_fallbacks(fallback_models)
-            
-            response = chat_model.invoke(messages)
-            response_text = response.content
+            # Model choice comes from the self-healing pool (agents/llm_pool.py): NVIDIA's
+            # hosted models flip between working / 404 / 410 / timing out within hours,
+            # so the chat walks the currently-live ranking instead of a fixed list.
+            # timeout=30 keeps one stalled model from freezing the chat for a minute.
+            from agents import llm_pool
+            llm_pool.wait_ready(30)           # right after startup, use the real ranking
+            live = llm_pool.ranked()[:4] or [m for m, _ in llm_pool.CANDIDATES[:4]]
+            response_text, last_err = None, None
+            for m in live:
+                try:
+                    reply = ChatNVIDIA(model=m, nvidia_api_key=nvidia_key,
+                                       max_completion_tokens=2000, timeout=30).invoke(messages)
+                    response_text = reply.content
+                    break
+                except Exception as exc:          # record the failure so the NEXT request skips this model
+                    last_err = exc
+                    if llm_pool.is_dead_error(exc):
+                        llm_pool.mark_dead(m)
+                    print(f"[CHAT] {m} failed ({type(exc).__name__}: {str(exc)[:100]}) — trying next.")
+            if response_text is None:
+                raise last_err if last_err else RuntimeError("no model available")
             
         else:
             # Fallback simulator with database parsing
@@ -903,11 +1053,17 @@ def triage_run_api():
     narrative quality but can never change a patient's triage priority.
     """
     patient_name = None
+    intake = {}
+    fast = False
     # Support JSON POST request for live session
     if request.is_json:
         data = request.get_json(silent=True) or {}
         source = data.get('source', '')
         patient_name = data.get('patient_name', '')
+        intake = _clean_intake(data)
+        # fast=True (kiosk): save the record + token right after the quick
+        # deterministic assessment and write the LLM narrative in later.
+        fast = bool(data.get('fast'))
         if source.lower() in ['live', 'webcam']:
             filepath = 'live'
         else:
@@ -943,35 +1099,41 @@ def triage_run_api():
         stress_index=float(vitals.get('stress_index', 0) or 0),
         sqi=float(vitals.get('sqi', vitals.get('confidence', 0)) or 0),
         rr_confidence=float(vitals.get('rr_confidence', 0) or 0),
+        age_years=intake.get('age'),          # kiosk intake; None (adult limits) from the dashboard
     )
     grounding = guidelines.grounding_context(assessment)
 
     # ── Step 2: LLM crew narrates/explains the deterministic assessment ──
-    result_text = ""
-    crew_failed_reason = None
-    try:
-        from agents.crew import build_triage_crew
-        crew_result = build_triage_crew().kickoff(inputs={
-            "video_path": filepath,
-            "precomputed_vitals": str(vitals),
-            "clinical_assessment": assessment.narrative_context(),
-            "grounding_context": grounding,
-        })
-        result_text = str(crew_result)
-    except Exception as e:
-        # The deterministic assessment above is already complete and valid —
-        # an LLM/API outage should degrade the narrative, not take down
-        # triage entirely.
-        crew_failed_reason = str(e)
-        result_text = (
-            "[AI narrative unavailable — LLM crew execution failed: "
-            f"{crew_failed_reason}]\n\n" + assessment.narrative_context()
+    def _narrate():
+        """Run the 3-agent crew. Returns (result_text, crew_failed_reason, triage_summary).
+        The deterministic assessment above is already complete and valid — an
+        LLM/API outage degrades the narrative, it never takes down triage."""
+        text, failed = "", None
+        try:
+            from agents.crew import build_triage_crew
+            crew_result = build_triage_crew().kickoff(inputs={
+                "video_path": filepath,
+                "precomputed_vitals": str(vitals),
+                "clinical_assessment": assessment.narrative_context(),
+                "grounding_context": grounding,
+            })
+            text = str(crew_result)
+        except Exception as e:
+            failed = str(e)
+            text = ("[AI narrative unavailable — LLM crew execution failed: "
+                    f"{failed}]\n\n" + assessment.narrative_context())
+        summary = (
+            _extract_triage_summary(text, assessment) if failed is None else
+            f"{assessment.primary_diagnosis}. " + "; ".join(assessment.reasoning)
         )
+        return text, failed, summary
 
-    triage_summary = (
-        _extract_triage_summary(result_text, assessment) if crew_failed_reason is None else
-        f"{assessment.primary_diagnosis}. " + "; ".join(assessment.reasoning)
-    )
+    if fast:
+        crew_failed_reason = None
+        result_text = "[AI narrative is being generated — this record is already triaged and queued.]"
+        triage_summary = f"{assessment.primary_diagnosis}. " + "; ".join(assessment.reasoning)
+    else:
+        result_text, crew_failed_reason, triage_summary = _narrate()
 
     # Generate patient details
     import uuid
@@ -1000,16 +1162,35 @@ def triage_run_api():
         'respiration': float(vitals.get('rr', 0) or 0),
         'hrv': float(vitals.get('hrv', 0) or 0),
         'stress_index': float(vitals.get('stress_index', 0) or 0),
+        **intake,
     }
 
-    # Save to Neon Postgres. save_patient_record() already retries once
-    # internally (get_connection()'s cold-start retry) — if it STILL fails,
-    # do not silently report success: the record only exists in this HTTP
-    # response, not the database, and the queue endpoint won't show it.
-    db_saved = save_patient_record(patient_record)
+    # Token allocation and the save happen together in ONE transaction (one pooled
+    # connection) so the fast kiosk path stays quick and two patients finishing
+    # at the same moment can never receive the same token. save_patient_record()
+    # swallows DB errors and returns False; this does the same, so the response
+    # still says plainly when the record was NOT persisted.
+    try:
+        db_saved = bool(save_new_patient(patient_record))
+    except Exception as exc:
+        print(f"[DB] ERROR saving record {patient_record.get('id')}: {exc}")
+        db_saved = False
+
+    if fast and db_saved:
+        def _fill_narrative(pid=patient_id):
+            text, failed, summary = _narrate()
+            try:
+                update_narrative(pid, summary, text)
+            except Exception as exc:
+                print(f"[NARRATIVE] could not update record {pid}: {exc}")
+        threading.Thread(target=_fill_narrative, daemon=True).start()
+
+    queue_info = _queue_info_for(patient_record.get('token')) if db_saved else None
 
     response = {
         'success': True,
+        'token': patient_record.get('token'),
+        'queue': queue_info,
         'message': (
             'Multi-Agent Triage pipeline completed.'
             if crew_failed_reason is None else
@@ -1035,6 +1216,150 @@ def triage_queue_delete_api():
     """Wipes every patient record — irreversible, so it's the one endpoint gated by API_KEY."""
     clear_all_patients()
     return jsonify({'success': True, 'message': 'Triage queue cleared.'})
+
+
+# ── Kiosk intake + waiting room ───────────────────────────────────────────────
+
+# Rough average consultation length, used ONLY for the wait estimate shown to
+# patients. It is a configurable placeholder, not a measured clinic figure —
+# the board labels every number as an estimate.
+QUEUE_AVG_SERVICE_MIN = int(os.getenv('QUEUE_AVG_SERVICE_MIN', '12'))
+
+_VALID_STATUS = ('waiting', 'called', 'seen', 'left')
+
+
+def _clean_intake(data):
+    """Whitelist + sanitise the intake fields a kiosk may send with a triage run."""
+    out = {}
+    age = data.get('age')
+    try:
+        age = int(age)
+        if 0 <= age <= 120:
+            out['age'] = age
+    except (TypeError, ValueError):
+        pass
+    sex = str(data.get('sex') or '').strip().lower()
+    if sex in ('male', 'female', 'other', 'unspecified'):
+        out['sex'] = sex
+    complaint = str(data.get('complaint') or '').strip()
+    if complaint:
+        out['complaint'] = complaint[:500]
+    phone = re.sub(r'[^0-9+]', '', str(data.get('phone') or ''))[:20]
+    if phone:
+        out['phone'] = phone
+    return out
+
+
+def _waiting_list():
+    """Patients still in the room, in the order they will be seen: a patient who
+    has been CALLED first, then sicker first (ESI 1 before 2 ...), higher priority
+    score first, then first-come-first-served within a tier. This differs on
+    purpose from the staff dashboard's order, which lists the NEWEST record first
+    inside a tier and would be unfair in a waiting room."""
+    rows = get_waiting_patients()
+    rows.sort(key=lambda p: (p.get('status') != 'called',
+                             p.get('esi_level', 5),
+                             -(p.get('priority_score') or 0),
+                             p.get('token_seq') or 0))
+    out = []
+    for i, p in enumerate(rows):
+        esi = int(p.get('esi_level', 5))
+        raw = i * QUEUE_AVG_SERVICE_MIN
+        est = 0 if (esi == 1 or p.get('status') == 'called') else int(-(-raw // 5) * 5)
+        out.append({
+            'id': p['id'], 'token': p['token'], 'esi_level': esi,
+            'status': p.get('status') or 'waiting',
+            'is_shock': bool(p.get('is_shock')),
+            'position': i + 1, 'ahead': i, 'est_wait_min': est,
+        })
+    return out
+
+
+def _queue_info_for(token):
+    if not token:
+        return None
+    try:
+        for e in _waiting_list():
+            if e['token'] == token:
+                return {k: e[k] for k in ('token', 'position', 'ahead', 'est_wait_min', 'status', 'esi_level')}
+    except Exception as exc:
+        print(f"[QUEUE] could not compute queue info: {exc}")
+    return None
+
+
+@app.route('/api/waiting_room', methods=['GET'])
+def waiting_room_api():
+    """Privacy-safe board data: tokens, priority tier, position and estimated wait.
+    No names, vitals or diagnoses — this is meant for a public screen."""
+    try:
+        entries = _waiting_list()
+    except Exception as exc:
+        return jsonify({'success': False, 'error': f'Waiting room unavailable: {exc}'}), 503
+    public = [{k: e[k] for k in ('token', 'esi_level', 'status', 'position', 'est_wait_min')}
+              for e in entries]
+    return jsonify({
+        'success': True,
+        'now_serving': [e['token'] for e in entries if e['status'] == 'called'],
+        'waiting': public,
+        'count': len(public),
+        'avg_service_min': QUEUE_AVG_SERVICE_MIN,
+        'note': 'Wait times are estimates and change as more serious cases arrive.',
+    })
+
+
+@app.route('/api/token/<token>', methods=['GET'])
+def token_lookup_api(token):
+    info = _queue_info_for(token)
+    if info is None:
+        return jsonify({'success': False, 'error': 'Token not found or already seen.'}), 404
+    return jsonify({'success': True, **info, 'avg_service_min': QUEUE_AVG_SERVICE_MIN})
+
+
+@app.route('/api/patients/<patient_id>/status', methods=['POST'])
+@require_api_key
+def patient_status_api(patient_id):
+    status = str((request.get_json(silent=True) or {}).get('status', '')).lower()
+    if status not in _VALID_STATUS:
+        return jsonify({'success': False, 'error': f'status must be one of {_VALID_STATUS}'}), 400
+    try:
+        changed = set_patient_status(patient_id, status)
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 503
+    if not changed:
+        return jsonify({'success': False, 'error': 'No such patient.'}), 404
+    return jsonify({'success': True, 'id': patient_id, 'status': status})
+
+
+@app.route('/api/queue/mark', methods=['POST'])
+@require_api_key
+def queue_mark_api():
+    """Staff action by TOKEN (the public board never exposes patient ids): {token, status}."""
+    data = request.get_json(silent=True) or {}
+    token, status = str(data.get('token', '')), str(data.get('status', '')).lower()
+    if status not in _VALID_STATUS:
+        return jsonify({'success': False, 'error': f'status must be one of {_VALID_STATUS}'}), 400
+    try:
+        for e in _waiting_list():
+            if e['token'] == token:
+                set_patient_status(e['id'], status)
+                return jsonify({'success': True, 'token': token, 'status': status})
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 503
+    return jsonify({'success': False, 'error': 'Token not in the waiting room.'}), 404
+
+
+@app.route('/api/queue/call_next', methods=['POST'])
+@require_api_key
+def call_next_api():
+    """Staff action: call the highest-priority waiting patient."""
+    try:
+        for e in _waiting_list():
+            if e['status'] == 'waiting':
+                set_patient_status(e['id'], 'called')
+                return jsonify({'success': True, 'token': e['token'], 'id': e['id'], 'esi_level': e['esi_level']})
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 503
+    return jsonify({'success': False, 'error': 'Nobody is waiting.'}), 404
 
 
 @app.route('/api/triage_queue', methods=['GET'])

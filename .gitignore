@@ -44,3 +44,15 @@ test/*.zip
 # actual evidence and are kept.
 test/ml_dataset.csv
 test/ml_dataset_subset_check.csv
+
+# ── Never publish (this repo is public) ──────────────────────────────────
+# 400+ GB of downloaded research datasets (UBFC, BIDMC, CapnoBase, VitalDB...). See data/DATASETS_USED.md.
+dataset/
+# Exported AI-assistant conversations: they quote environment-variable names and may quote values.
+claude_history_export/
+# Voice models and rendered clips (clips already ship in frontend/public/voice); re-create with tools/tts_lab/render_prompts.py
+tools/tts_lab/models/
+tools/tts_lab/prompts/
+tools/tts_lab/samples/
+# Stray lockfile created by running npm from the repo root
+/package-lock.json

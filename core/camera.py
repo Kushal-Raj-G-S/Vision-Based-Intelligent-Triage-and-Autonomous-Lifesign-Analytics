@@ -246,6 +246,13 @@ class Camera:
         self.alpha = 0.2
         self.is_moving = False
 
+        # Smoothed face box of the most recent frame, in pixels, plus the frame
+        # size: (x, y, w, h, frame_w, frame_h). None whenever no face was found
+        # on that frame. Read by web/routes.py to give the kiosk its
+        # "move closer / left / right" guidance; display-only, never feeds the
+        # rPPG signal.
+        self.last_face_box: Optional[tuple] = None
+
         # Landmark-based motion tracking (MediaPipe mode)
         self._prev_cx: Optional[float] = None
         self._prev_cy: Optional[float] = None
@@ -391,9 +398,16 @@ class Camera:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def get_frame(self):
+    def get_frame(self, annotate: bool = True, pulse: bool = False):
         """
         Capture one frame and extract ROI signals.
+
+        `annotate=False` returns a CLEAN frame (no debug face/ROI rectangles
+        or labels) for patient-facing displays; the ROI extraction itself is
+        identical either way — it simply draws on a throwaway copy.
+
+        `pulse=True` blends the colour-magnified pulse map over the face in the
+        returned JPEG only (display copy; never fed to the rPPG engine).
 
         Returns
         -------
@@ -418,13 +432,22 @@ class Camera:
             log.error("Error reading frame: %s", exc)
             return None, None, False, 0.0
 
+        clean = None if (annotate and not pulse) else frame.copy()
+
         if self.use_mediapipe:
             roi_data, _, motion_delta = self._extract_roi_mediapipe(frame)
         else:
             roi_data, _, motion_delta = self._extract_roi_haar(frame)
 
         try:
-            _, buffer = cv2.imencode(".jpg", frame)
+            shown = frame if annotate else clean
+            if pulse:
+                if getattr(self, "_pulse_viz", None) is None:
+                    from core.pulse_viz import PulseViz
+                    self._pulse_viz = PulseViz()
+                # signal from the un-annotated frame; paint onto whatever is being shown (ROI boxes included)
+                shown = self._pulse_viz.apply(clean, self.last_face_box, target=shown)
+            _, buffer = cv2.imencode(".jpg", shown)
             return buffer.tobytes(), roi_data, self.is_moving, motion_delta
         except Exception as exc:
             log.error("Error encoding frame: %s", exc)
@@ -591,6 +614,7 @@ class Camera:
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
             return None, None, 0.0
 
+        self.last_face_box = None
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
@@ -617,6 +641,7 @@ class Camera:
 
             sx, sy, sw, sh = self.last_x, self.last_y, self.last_w, self.last_h
             fr = frame
+            self.last_face_box = (sx, sy, sw, sh, frame.shape[1], frame.shape[0])
 
             def _roi(ox_frac, oy_frac, ow_frac, oh_frac):
                 x1 = max(0, sx + int(sw * ox_frac))

@@ -1,0 +1,6 @@
+{
+  "primary":  {"engine": "edge-tts", "voice": "en-GB-SoniaNeural", "rate": "+10%", "pitch": "-2Hz"},
+  "backup":   {"engine": "edge-tts", "voice": "en-IN-NeerjaNeural", "rate": "+10%", "pitch": "-2Hz"},
+  "local_fallback_for_dynamic_lines": {"engine": "kokoro-onnx", "voice": "bf_emma", "speed": 1.0, "note": "different voice from Sonia; only for names/results when offline"},
+  "decided": "2026-10-29 by listening test; Sonia chosen, speed raised in steps (-8% -> +5% -> +10%)"
+}

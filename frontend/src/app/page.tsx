@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import { MonitorBar, ParamBlock, SweepTrace, deriveAlarms, LIMITS, PARAM } from '@/components/BedsideMonitor';
+import AppRail from '@/components/AppRail';
 
 // TypeScript Interfaces
 interface ChatMessage {
@@ -51,6 +53,7 @@ interface Metrics {
   estimated_lux: number;
   motion_delta: number;
   is_live: boolean;
+  has_source?: boolean;
   calibration_done: boolean;
   ppg_signal: number[];
   calibration_progress: number;
@@ -61,12 +64,23 @@ interface Metrics {
 
 const BACKEND_URL = "http://127.0.0.1:5002";
 
+// Live acquisition window before auto-triage fires. Was 30s — too short for
+// respiratory rate, which needs a 60s buffer just to attempt its first
+// reading (core/rppg.py's _RR_WINDOW_SEC) plus more time beyond that to
+// accumulate the 3+ readings the validated session-median accuracy actually
+// depends on (measured at 1.59-2.51 MAE on real ground truth, vs. no signal
+// at all before 60s). 90s gives ~30s of margin past RR's hard floor; HR/HRV/
+// Stress Index/SQI are all ready well within that window regardless.
+const SESSION_WINDOW_SEC = 90;
+
 type NavigationTab = 'monitor' | 'queue' | 'crew' | 'chat';
 
 export default function Home() {
   // Navigation
   const [activeTab, setActiveTab] = useState<NavigationTab>('monitor');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+  // Colour-magnified pulse overlay on the live feed (display only; see core/pulse_viz.py)
+  const [pulseView, setPulseView] = useState(false); // experimental: off by default
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   // Switch sections and always land at the top of the page, rather than
   // keeping whatever scroll position the previous section was left at.
@@ -129,8 +143,8 @@ export default function Home() {
   const [uploadMessage, setUploadMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
   // Video feed reconnection key — incrementing forces img src reload
   const [videoFeedKey, setVideoFeedKey] = useState<number>(0);
-  // 30-second session timer and auto-report
-  const [sessionTimer, setSessionTimer] = useState<number>(30);
+  // Live session timer and auto-report — see SESSION_WINDOW_SEC for why 90s
+  const [sessionTimer, setSessionTimer] = useState<number>(SESSION_WINDOW_SEC);
   const [sessionReport, setSessionReport] = useState<any>(null);
   const [reportLoading, setReportLoading] = useState<boolean>(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -143,7 +157,6 @@ export default function Home() {
   // a ref can, since it's mutated immediately, not on next render.
   const triageInFlightRef = useRef<boolean>(false);
   
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [patientName, setPatientName] = useState<string>('');
   
   // Refs
@@ -244,11 +257,11 @@ export default function Home() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [chatHistory, isChatLoading]);
 
-  // 30-second countdown timer — starts when calibration_done flips true
+  // Countdown timer (SESSION_WINDOW_SEC) — starts when calibration_done flips true
   useEffect(() => {
     if (metrics.calibration_done && metrics.is_live) {
       // Start countdown if not already running
-      if (timerRef.current === null && sessionTimer <= 30 && !reportFetchedRef.current) {
+      if (timerRef.current === null && sessionTimer <= SESSION_WINDOW_SEC && !reportFetchedRef.current) {
         timerRef.current = setInterval(() => {
           setSessionTimer(prev => {
             if (prev <= 1) {
@@ -266,6 +279,11 @@ export default function Home() {
                 // different (auto-generated) patient ID.
                 setTriageAutoRan(true);
                 setReportLoading(true);
+                // Release the webcam hardware the moment the 90s window ends
+                // — the buffered signal is already enough to generate the
+                // report, there's no reason to keep the camera lit past the
+                // acquisition window while triage runs.
+                handleReleaseCamera();
                 fetch(`${BACKEND_URL}/api/generate_report`, { method: 'POST' })
                   .then(r => r.json())
                   .then(d => {
@@ -288,7 +306,7 @@ export default function Home() {
       // Reset on disconnect / new session
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
       if (!metrics.calibration_done) {
-        setSessionTimer(30);
+        setSessionTimer(SESSION_WINDOW_SEC);
         setSessionReport(null);
         reportFetchedRef.current = false;
         setTriageAutoRan(false);
@@ -489,6 +507,20 @@ export default function Home() {
   };
 
   // 5. Handlers
+  // Reset the 90s countdown at the moment the user actually presses play,
+  // rather than leaving it to the calibration_done effect below — that
+  // effect only resets the timer while calibration_done is still false,
+  // so a leftover low count from a just-ended prior session could survive
+  // into the next one's first few polls and start counting down from
+  // wherever it left off instead of a fresh SESSION_WINDOW_SEC.
+  const resetSessionWindow = () => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    setSessionTimer(SESSION_WINDOW_SEC);
+    setSessionReport(null);
+    reportFetchedRef.current = false;
+    setTriageAutoRan(false);
+  };
+
   const handleStartWebcam = async () => {
     setUploadMessage({ text: '', type: '' });
     try {
@@ -499,6 +531,7 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.success) {
+        resetSessionWindow();
         setUploadMessage({ text: `Webcam session initialized.`, type: 'success' });
         // Force video feed img to reconnect (backend reset kills old MJPEG stream)
         setTimeout(() => setVideoFeedKey(k => k + 1), 400);
@@ -712,9 +745,7 @@ export default function Home() {
   };
 
   return (
-    <div className={`flex-1 font-sans min-h-screen antialiased selection:bg-cyan-500 selection:text-black transition-colors duration-200 ${
-      theme === 'light' ? 'light-theme bg-slate-50 text-slate-900' : 'bg-[#030712] text-zinc-100'
-    }`}>
+    <div className="vital-app flex-1 font-sans min-h-screen antialiased transition-colors duration-200">
       
       {/* Keyframe Injection for custom scanlines, glows, and animations */}
       <style jsx global>{`
@@ -749,781 +780,228 @@ export default function Home() {
         .custom-scroll::-webkit-scrollbar-thumb:hover {
           background: rgba(255, 255, 255, 0.26);
         }
-        .light-theme .custom-scroll {
-          scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
-        }
-        .light-theme .custom-scroll::-webkit-scrollbar-thumb {
-          background: rgba(15, 23, 42, 0.18);
-        }
-        .light-theme .custom-scroll::-webkit-scrollbar-thumb:hover {
-          background: rgba(15, 23, 42, 0.32);
-        }
         .shadow-glow-red {
           box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-        }
-
-        /* ── LIGHT THEME STYLES ──
-           Wrapped in @layer utilities to match the layer Tailwind's own
-           utility classes live in. Per the CSS Cascade Layers spec,
-           !important declarations in *unlayered* CSS have LOWER priority
-           than !important (or even normal) declarations inside a named
-           layer — the importance ordering across layers is reversed
-           relative to normal declarations. A plain unlayered <style>
-           override, no matter how !important, could never beat a
-           Tailwind utility for this reason. Placing these in the same
-           layer makes it a normal same-layer, same-specificity contest,
-           which source order (these rules come later) resolves correctly. */
-        @layer utilities {
-        .light-theme {
-          background-color: #f8fafc !important;
-          color: #0f172a !important;
-        }
-        .light-theme aside {
-          background-color: rgba(255, 255, 255, 0.95) !important;
-          border-color: #e2e8f0 !important;
-          box-shadow: 4px 0 6px -1px rgba(0, 0, 0, 0.05) !important;
-        }
-        .light-theme aside h1, .light-theme aside span {
-          color: #0f172a !important;
-        }
-        .light-theme aside p {
-          color: #64748b !important;
-        }
-        /* Sidebar navigation */
-        .light-theme aside nav button {
-          color: #64748b !important;
-        }
-        .light-theme aside nav button:hover {
-          background-color: #f1f5f9 !important;
-          color: #0f172a !important;
-        }
-        /* Cards — substring matches catch every opacity/alpha-hex variant in one rule,
-           instead of an exact-class list that silently misses new variants. */
-        .light-theme [class*="bg-[#090e1e"] {
-          background-color: rgba(255, 255, 255, 0.9) !important;
-          border-color: #e2e8f0 !important;
-          box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.05) !important;
-        }
-        /* Internal blocks (near-black backgrounds: consoles, waveforms, feeds) */
-        .light-theme [class*="bg-[#02040a"],
-        .light-theme [class*="bg-[#030712"],
-        .light-theme [class*="bg-[#060813"],
-        .light-theme [class*="bg-[#030612"] {
-          background-color: #f1f5f9 !important;
-          border-color: #e2e8f0 !important;
-          color: #0f172a !important;
-        }
-        .light-theme [class*="bg-[#070b19"] {
-          background-color: #ffffff !important;
-          border-color: #e2e8f0 !important;
-        }
-        /* Agent-tab active highlight (was a dark indigo tint, unreadable on white) */
-        .light-theme [class*="bg-[#0e1326"] {
-          background-color: #e0f2fe !important;
-        }
-        /* Disabled gradient buttons (e.g. Kickoff Triage Crew when offline) rendered
-           near-black-on-black in light mode; force a visibly muted, readable state. */
-        .light-theme button:disabled {
-          background-image: none !important;
-          background-color: #e2e8f0 !important;
-          color: #94a3b8 !important;
-          opacity: 1 !important;
-        }
-        /* Border overrides */
-        .light-theme .border-zinc-800,
-        .light-theme .border-zinc-800\/80,
-        .light-theme .border-zinc-850,
-        .light-theme .border-zinc-800\/60,
-        .light-theme .border-zinc-700\/80,
-        .light-theme .border-indigo-800\/40 {
-          border-color: #e2e8f0 !important;
-        }
-        /* Text color overrides */
-        .light-theme .text-white,
-        .light-theme .text-zinc-100,
-        .light-theme .text-zinc-150,
-        .light-theme .text-zinc-200,
-        .light-theme .text-zinc-300 {
-          color: #0f172a !important;
-        }
-        .light-theme .text-zinc-450,
-        .light-theme .text-zinc-500,
-        .light-theme .text-zinc-550 {
-          color: #64748b !important;
-        }
-        .light-theme .text-zinc-400 {
-          color: #475569 !important;
-        }
-        /* Live Readings items styling */
-        .light-theme .bg-\[\#070b19\] {
-          background-color: #ffffff !important;
-          border-color: #e2e8f0 !important;
-        }
-        /* Forms, inputs & controls */
-        .light-theme select,
-        .light-theme input {
-          background-color: #ffffff !important;
-          border-color: #cbd5e1 !important;
-          color: #0f172a !important;
-        }
-        .light-theme select:focus,
-        .light-theme input:focus {
-          border-color: #06b6d4 !important;
-        }
-        /* Interactive controls panel bg */
-        .light-theme button.bg-zinc-900 {
-          background-color: #e2e8f0 !important;
-          color: #0f172a !important;
-          border-color: #cbd5e1 !important;
-        }
-        .light-theme button.bg-zinc-900:hover {
-          background-color: #cbd5e1 !important;
-        }
-        /* Scrollbars and status displays */
-        .light-theme .bg-\[\#0b1022\] {
-          background-color: #e2e8f0 !important;
-          border-color: #cbd5e1 !important;
-          color: #0f172a !important;
-        }
-        .light-theme .bg-\[\#0b1022\] .text-zinc-500 {
-          color: #475569 !important;
-        }
-        /* Chat view message bubbles */
-        .light-theme .bg-zinc-900\/60 {
-          background-color: #e2e8f0 !important;
-          color: #0f172a !important;
-          border-color: #cbd5e1 !important;
-        }
-        .light-theme .text-zinc-250 {
-          color: #1e293b !important;
-        }
-
-        /* ── Newer "professional" surfaces (sidebar cards, ARIA, Triage
-           Dispatch, Clinical Crew) use a white/[x]-opacity + bg-[#0d1117]/
-           bg-[#080a0f] vocabulary that didn't exist when the rules above
-           were written, so light mode rendered them invisible (white-on-
-           white) or washed-out gray. Same substring-selector approach,
-           extended to cover these. ── */
-        .light-theme [class*="bg-[#0d1117"] {
-          background-color: rgba(255, 255, 255, 0.95) !important;
-          border-color: #e2e8f0 !important;
-          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
-        }
-        .light-theme [class*="bg-[#080a0f"] {
-          background-color: #f1f5f9 !important;
-          border-color: #e2e8f0 !important;
-        }
-        .light-theme [class*="bg-white/["] {
-          background-color: #eef2f6 !important;
-        }
-        .light-theme [class*="border-white/"] {
-          border-color: #dde3ea !important;
-        }
-        /* Text/icon grays tuned for a dark background read as too light on
-           white — remap the ones the new sections actually use. */
-        .light-theme .text-zinc-600,
-        .light-theme .text-zinc-650,
-        .light-theme .text-zinc-700 {
-          color: #475569 !important;
-        }
-        /* Native <option> popups keep their own explicit dark colors
-           (set inline in the JSX) even in light mode, since the closed
-           <select> box is already handled above and native popup styling
-           can't inherit Tailwind text-color the same way. */
         }
       `}</style>
 
       {/* 1 &amp; 2. Sidebar Navigation (collapsible) */}
       <div className="flex">
-        <aside className={`sticky top-0 h-screen z-50 bg-[#070b19]/95 backdrop-blur-xl border-r border-zinc-800/80 shadow-xl flex flex-col flex-shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${sidebarCollapsed ? 'w-[76px]' : 'w-64'}`}>
-
-          {/* Logo */}
-          <div className="flex items-center gap-3 px-4 py-5 border-b border-zinc-800/60">
-            <div className="w-10 h-10 rounded-xl bg-zinc-950 flex items-center justify-center shadow-lg shadow-cyan-500/20 relative overflow-hidden border border-zinc-800 flex-shrink-0">
-              <img src="/vital_logo.png" alt="VITAL Logo" className="w-full h-full object-cover" />
-            </div>
-            <div className={`overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'opacity-0' : 'opacity-100'}`}>
-              <h1 className="text-lg font-extrabold tracking-tight text-white leading-tight">VITAL</h1>
-              <p className="text-[8.5px] text-zinc-500 uppercase tracking-widest font-bold mt-0.5 leading-tight">Vision-Based Triage &amp; Lifesign Analytics</p>
-            </div>
-          </div>
-
-          {/* Status block: ARIA, System, Queue, Theme */}
-          <div className="px-3 py-4 border-b border-zinc-800/60 flex flex-col gap-2">
-            <div className={`flex items-center gap-2 text-xs bg-[#0b1022] border border-indigo-800/40 rounded-lg px-3 py-2 ${sidebarCollapsed ? 'justify-center' : ''}`} title="ARIA Online">
-              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse flex-shrink-0"></span>
-              <span className={`text-indigo-400 font-black uppercase tracking-widest text-[10px] overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>ARIA Online</span>
-            </div>
-
-            <div className={`flex items-center gap-2 text-xs bg-[#0b1022] border border-zinc-800 rounded-lg px-3 py-2 ${sidebarCollapsed ? 'justify-center' : ''}`} title={backendOnline ? 'System Online' : 'System Offline'}>
-              {backendOnline ? (
-                <>
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.5)] flex-shrink-0"></span>
-                  <span className={`font-extrabold text-emerald-400 text-[10px] uppercase tracking-widest overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>System Online</span>
-                </>
-              ) : (
-                <>
-                  <span className="w-2 h-2 rounded-full bg-rose-500 flex-shrink-0"></span>
-                  <span className={`font-extrabold text-rose-500 text-[10px] uppercase tracking-widest overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>System Offline</span>
-                </>
-              )}
-            </div>
-
-            <div className={`flex items-center gap-2 text-xs bg-[#0b1022] border border-zinc-800 rounded-lg px-3 py-2 font-mono ${sidebarCollapsed ? 'justify-center' : ''}`} title="Triage Queue">
-              <span className="text-zinc-500 uppercase tracking-wider text-[9px] font-bold flex-shrink-0">{sidebarCollapsed ? 'Q' : 'Queue'}</span>
-              <span className="font-black text-cyan-400 text-sm">{triageQueue.length}</span>
-            </div>
-
-            {/* Theme Toggle Button */}
-            <button
-              onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')}
-              className={`flex items-center gap-2 p-2 bg-[#0b1022] border border-zinc-800 rounded-lg hover:bg-zinc-800/50 hover:border-zinc-700 transition-colors ${sidebarCollapsed ? 'justify-center' : ''}`}
-              title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
-            >
-              {theme === 'dark' ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-amber-400 flex-shrink-0">
-                  <circle cx="12" cy="12" r="5"/>
-                  <line x1="12" y1="1" x2="12" y2="3"/>
-                  <line x1="12" y1="21" x2="12" y2="23"/>
-                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-                  <line x1="1" y1="12" x2="3" y2="12"/>
-                  <line x1="21" y1="12" x2="23" y2="12"/>
-                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-indigo-400 flex-shrink-0">
-                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-                </svg>
-              )}
-              <span className={`text-[10px] uppercase font-bold text-zinc-400 tracking-widest overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>
-            </button>
-          </div>
-
-          {/* Section navigation */}
-          <nav className="flex-1 flex flex-col gap-1.5 px-3 py-4 overflow-y-auto custom-scroll">
-            <button
-              onClick={() => goToTab('monitor')}
-              title="Vitals Monitor"
-              className={`flex items-center gap-3 rounded-lg px-3 py-3 transition-all text-xs font-black uppercase tracking-widest ${sidebarCollapsed ? 'justify-center' : ''} ${
-                activeTab === 'monitor'
-                  ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 shadow-glow-cyan'
-                  : 'text-zinc-500 hover:text-zinc-300 border border-transparent hover:bg-zinc-800/30'
-              }`}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-              <span className={`overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>Vitals Monitor</span>
-            </button>
-            <button
-              onClick={() => goToTab('queue')}
-              title="Triage Dispatch"
-              className={`flex items-center gap-3 rounded-lg px-3 py-3 transition-all text-xs font-black uppercase tracking-widest ${sidebarCollapsed ? 'justify-center' : ''} ${
-                activeTab === 'queue'
-                  ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 shadow-glow-cyan'
-                  : 'text-zinc-500 hover:text-zinc-300 border border-transparent hover:bg-zinc-800/30'
-              }`}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
-              <span className={`flex-1 text-left overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>Triage Dispatch</span>
-              {triageQueue.length > 0 && (
-                <span className="bg-cyan-500 text-[#020408] text-[9px] font-black px-1.5 py-0.5 rounded-full leading-none flex-shrink-0">{triageQueue.length}</span>
-              )}
-            </button>
-            <button
-              onClick={() => goToTab('crew')}
-              title="Clinical Crew"
-              className={`flex items-center gap-3 rounded-lg px-3 py-3 transition-all text-xs font-black uppercase tracking-widest ${sidebarCollapsed ? 'justify-center' : ''} ${
-                activeTab === 'crew'
-                  ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 shadow-glow-cyan'
-                  : 'text-zinc-500 hover:text-zinc-300 border border-transparent hover:bg-zinc-800/30'
-              }`}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="flex-shrink-0"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
-              <span className={`overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>Clinical Crew</span>
-            </button>
-            <button
-              onClick={() => goToTab('chat')}
-              title="ARIA Assistant"
-              className={`flex items-center gap-3 rounded-lg px-3 py-3 transition-all text-xs font-black uppercase tracking-widest ${sidebarCollapsed ? 'justify-center' : ''} ${
-                activeTab === 'chat'
-                  ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 shadow-[0_0_15px_rgba(99,102,241,0.15)]'
-                  : 'text-zinc-500 hover:text-zinc-300 border border-transparent hover:bg-zinc-800/30'
-              }`}
-            >
-              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse flex-shrink-0"></span>
-              <span className={`overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>ARIA Assistant</span>
-            </button>
-          </nav>
-
-          {/* Collapse / expand toggle — bottom of sidebar */}
-          <button
-            onClick={() => setSidebarCollapsed(v => !v)}
-            className={`flex items-center gap-2 mx-3 mb-3 px-3 py-2.5 rounded-lg bg-[#0b1022] border border-zinc-800 text-zinc-500 hover:text-cyan-400 hover:border-cyan-500/40 hover:bg-zinc-800/50 transition-colors ${sidebarCollapsed ? 'justify-center' : ''}`}
-            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`flex-shrink-0 transition-transform duration-200 ${sidebarCollapsed ? 'rotate-180' : ''}`}>
-              <polyline points="15 18 9 12 15 6"/>
-            </svg>
-            <span className={`text-[10px] uppercase font-bold tracking-widest overflow-hidden transition-opacity duration-150 whitespace-nowrap ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>Collapse</span>
-          </button>
-        </aside>
+        <AppRail active={activeTab} onSelect={goToTab} queueCount={triageQueue.length} backendOnline={backendOnline} />
 
       {/* 3. Main Workspace Container */}
-      <main className="flex-1 min-w-0 max-w-[1700px] mx-auto px-6 mt-6 pb-10">
+      <main className={`flex-1 min-w-0 max-w-[1700px] mx-auto px-6 mt-4 pb-4`}>
 
-        {/* VIEW 1: LIVE VITAL MONITOR */}
-        {activeTab === 'monitor' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-            
-            {/* Left Hand side: Camera Feed Controls (expanded to col-span-7) */}
-            <div className="lg:col-span-7 flex flex-col gap-6">
-              <div className="bg-[#0d1117]/70 border border-white/[0.06] rounded-2xl p-6 backdrop-blur-xl shadow-lg flex flex-col relative">
+        <header className={`flex flex-wrap items-end justify-between gap-4 hidden`}>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-white">
+              {activeTab === 'monitor' ? 'Vitals monitor' : activeTab === 'queue' ? 'Triage dispatch' : activeTab === 'crew' ? 'Clinical crew' : 'ARIA assistant'}
+            </h1>
+            <p className={`text-sm text-zinc-500 mt-1 ${activeTab === 'monitor' ? 'hidden' : ''}`}>
+              {activeTab === 'monitor' ? 'Live contactless heart rate, respiration and stress from the camera.' :
+               activeTab === 'queue' ? 'Everyone assessed today, ordered by acuity.' :
+               activeTab === 'crew' ? 'How the three agents reach and explain a triage decision.' :
+               'Ask ARIA about the current patient or the queue.'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 text-xs font-medium">
+            <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border ${backendOnline ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-rose-500/30 bg-rose-500/10 text-rose-400'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${backendOnline ? 'bg-emerald-400' : 'bg-rose-500'}`}></span>
+              {backendOnline ? 'Backend connected' : 'Backend offline'}
+            </span>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-white/10 bg-white/[0.04] text-zinc-300">
+              {triageQueue.length} in queue
+            </span>
+          </div>
+        </header>
 
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wide flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400/80"></span>
-                    Intake Acquisition Feed
-                  </h2>
-                  {metrics.is_live && (
-                    <span className="text-[10px] font-semibold text-rose-400 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
-                      Recording
-                    </span>
-                  )}
-                </div>
 
-                <div className="group relative min-h-[420px] bg-[#080a0f] border border-white/[0.06] rounded-xl overflow-hidden mb-4 flex items-center justify-center">
-
-                  {backendOnline ? (
-                    metrics.status === 'IMAGE_READY' || metrics.remark === 'IMAGE_DEMO' ? (
-                      <img
-                        src={`${BACKEND_URL}/image_feed`}
-                        alt="Intake snap"
-                        className="w-full h-full object-contain relative z-10"
-                      />
+        {/* VIEW 1: LIVE VITAL MONITOR — optical bedside monitor, one screen, no page scroll */}
+        {activeTab === 'monitor' && (() => {
+          const alarms = deriveAlarms({
+            bpm: metrics.bpm, hrClass: metrics.classification, rr: metrics.rr, rrClass: metrics.rr_classification,
+            stress: metrics.stress_index, warnings: metrics.warnings || [], faceDetected: metrics.face_detected, hasSource: metrics.has_source,
+          });
+          const hrC = (metrics.classification || '').toUpperCase();
+          const rrC = (metrics.rr_classification || '').toUpperCase();
+          return (
+          <div className="bm-root">
+            <MonitorBar
+              patient={patientName.trim()}
+              source={!metrics.has_source ? 'No source' : deviceMode === 'upload' ? 'Recorded video' : 'Live camera'}
+              live={!!metrics.is_live}
+              alarms={alarms}
+              scanLeft={metrics.calibration_done && sessionTimer > 0 ? sessionTimer : null}
+              scanTotal={SESSION_WINDOW_SEC}
+              onDetails={() => setDetailsOpen(true)}
+              detailsBadge={(metrics.warnings || []).length + (sessionReport ? 1 : 0)}
+            />
+            <div className="bm-grid">
+              <div className="bm-left">
+                <div className="bm-view">
+                  <div className="bm-view-media group">
+                    {backendOnline ? (
+                      metrics.status === 'IMAGE_READY' || metrics.remark === 'IMAGE_DEMO' ? (
+                        <img src={`${BACKEND_URL}/image_feed`} alt="Intake snapshot" />
+                      ) : (
+                        <img
+                          key={`${videoFeedKey}-${pulseView}`}
+                          src={`${BACKEND_URL}/video_feed?t=${videoFeedKey}${pulseView ? '&pulse=1' : ''}`}
+                          alt="Patient camera"
+                          onError={() => { setTimeout(() => setVideoFeedKey(k => k + 1), 1000); }}
+                        />
+                      )
                     ) : (
-                      <img
-                        key={videoFeedKey}
-                        src={`${BACKEND_URL}/video_feed?t=${videoFeedKey}`}
-                        alt="Medical Stream"
-                        className="w-full h-full object-contain relative z-10"
-                        onError={() => {
-                          // Auto-retry connection after 1s if stream breaks
-                          setTimeout(() => setVideoFeedKey(k => k + 1), 1000);
-                        }}
-                      />
-                    )
-                  ) : (
-                    <div className="text-center p-6 max-w-[320px] relative z-10">
-                      <div className="w-14 h-14 mx-auto mb-4 flex items-center justify-center rounded-full bg-white/[0.04] border border-white/[0.06]">
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-zinc-500">
-                          <path d="M1 5h4l2-3h6l2 3h4a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" opacity="0.6"/>
-                          <circle cx="12" cy="12" r="3.2"/>
-                          <line x1="2" y1="20" x2="20" y2="2" stroke="currentColor" strokeWidth="1.6" className="text-zinc-500/70"/>
-                        </svg>
+                      <div className="bm-empty"><strong>Backend offline</strong><span>Start the API server on port 5002 to see the camera.</span></div>
+                    )}
+                    {backendOnline && metrics.has_source === false && (
+                      <div className="bm-empty">
+                        <strong>No patient on monitor</strong>
+                        <span>Enter a name, then press Start to use the camera or Load video for a recording.</span>
                       </div>
-                      <p className="text-sm font-semibold text-zinc-300">Intake hardware offline</p>
-                      <p className="text-xs text-zinc-500 mt-2 leading-relaxed">Ensure the Python backend API server is running on port 5002 with required dependencies.</p>
-                    </div>
-                  )}
-
-                  {/* Floating acquisition state tags */}
-                  <div className="absolute top-3 left-3 flex flex-wrap gap-2 pointer-events-none z-10">
-                    <span className={`text-[10px] font-semibold px-2.5 py-1 rounded-md border backdrop-blur-sm ${
-                      metrics.status === 'OK' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
-                      metrics.status === 'CALIBRATING' ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' :
-                      metrics.status === 'VIDEO_ENDED' ? 'bg-white/5 text-zinc-400 border-white/10' :
-                      metrics.status === 'IMAGE_READY' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
-                      'bg-white/5 text-zinc-500 border-white/10'
-                    }`}>
-                      {metrics.status}
-                    </span>
-
-                    {metrics.face_detected && (
-                      <span className="text-[10px] bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2.5 py-1 rounded-md font-semibold backdrop-blur-sm">
-                        Face detected
-                      </span>
                     )}
                   </div>
 
-                  {metrics.video_total_sec != null && (
-                    <span
-                      className="absolute bottom-3 right-3 text-[11px] font-mono font-semibold px-2.5 py-1 rounded-md bg-black/70 text-zinc-200 border border-white/10 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20"
-                      title="Uploaded video playback position"
-                    >
-                      {formatDuration(metrics.video_current_sec || 0)} / {formatDuration(metrics.video_total_sec)}
-                      {metrics.status === 'VIDEO_ENDED' && ' (ended)'}
-                    </span>
-                  )}
-                </div>
+                  <div className="bm-view-label">
+                    <span className={metrics.status === 'OK' ? 'ok' : ''}>{({
+                      OK: 'Signal OK',
+                      CALIBRATING: `Calibrating ${metrics.calibration_progress || 0}%`,
+                      OUT_OF_RANGE: 'Reading outside 48-150 bpm',
+                      LOW_SIGNAL: 'Weak signal',
+                      NO_FACE: 'No face',
+                      WAITING: 'Waiting',
+                      VIDEO_ENDED: 'Video ended',
+                      DISCONNECTED: 'Disconnected',
+                      IMAGE_READY: 'Still image',
+                    } as Record<string, string>)[metrics.status] ?? metrics.status}</span>
+                    {metrics.face_detected && <span className="ok">Face locked</span>}
+                    {metrics.is_live && <span className="rec">Recording</span>}
+                    {metrics.video_total_sec != null && <span>{formatDuration(metrics.video_current_sec || 0)} / {formatDuration(metrics.video_total_sec)}</span>}
+                  </div>
 
-                {metrics.status === 'VIDEO_ENDED' && !metrics.is_live && (
-                  <div className="mb-4 flex items-center justify-between gap-3 bg-amber-500/10 border border-amber-500/25 rounded-lg px-4 py-3">
-                    <span className="text-xs font-semibold text-amber-300 flex items-center gap-2">
-                      {isTriageRunning ? (
-                        <>
-                          <span className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin"></span>
-                          Video finished -- Triage Crew is running automatically on the full-video result...
-                        </>
-                      ) : (
-                        <>Video finished -- Triage Crew ran automatically on the full-video result.</>
-                      )}
-                    </span>
-                    <button
-                      onClick={() => goToTab('crew')}
-                      className="shrink-0 text-xs font-bold text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-md px-3 py-1.5 transition-colors"
+                  {(metrics.status === 'VIDEO_ENDED' && !metrics.is_live) && (
+                    <div className="bm-toast">
+                      <span style={{ color: '#ffcf4a' }}>{isTriageRunning ? 'Video finished. Triage crew is running…' : 'Video finished. Triage crew ran on the full video.'}</span>
+                      <button className="bm-btn" onClick={() => goToTab('crew')}>Open crew</button>
+                    </div>
+                  )}
+                  {uploadMessage.text && (
+                    <div className="bm-toast" style={{ top: 100, color: uploadMessage.type === 'success' ? '#4ef0a0' : '#ff8a96' }}>{uploadMessage.text}</div>
+                  )}
+
+                  <div className="bm-dock">
+                    <label htmlFor="bm-patient" className="sr-only">Patient full name</label>
+                    <input id="bm-patient" className="bm-field" type="text" placeholder="Patient full name" value={patientName} onChange={(e) => setPatientName(e.target.value)} />
+                    <label htmlFor="bm-source" className="sr-only">Camera or recorded video</label>
+                    <select
+                      id="bm-source" className="bm-field"
+                      value={deviceMode === 'upload' ? '__upload__' : (selectedCamera !== null ? selectedCamera : '')}
+                      onChange={(e) => { if (e.target.value === '__upload__') { setDeviceMode('upload'); } else { setDeviceMode('camera'); setSelectedCamera(Number(e.target.value)); } }}
                     >
-                      View in Clinical Crew &rarr;
+                      {cameras.map((cam) => (<option key={cam.index} value={cam.index}>{cam.label}</option>))}
+                      {cameras.length === 0 && <option value="">No camera found</option>}
+                      <option value="__upload__">Recorded video</option>
+                    </select>
+                    {deviceMode === 'upload' && (
+                      <>
+                        <label htmlFor="bm-video" className="sr-only">Which recording</label>
+                        <select id="bm-video" className="bm-field" value={selectedUploadedVideo} onChange={(e) => setSelectedUploadedVideo(e.target.value)}>
+                          {uploadedVideos.length === 0 && <option value="">No videos uploaded</option>}
+                          {uploadedVideos.map((v) => (<option key={v.filename} value={v.filename}>{v.filename}</option>))}
+                        </select>
+                      </>
+                    )}
+                    {(() => {
+                      const running = !!metrics.is_live || (!!metrics.has_source && metrics.status !== 'VIDEO_ENDED');
+                      return (
+                        <button
+                          className={`bm-btn ${running ? 'stop' : 'go'}`}
+                          onClick={running ? handleReleaseCamera : (deviceMode === 'upload' ? handleStartUploadedVideo : handleStartWebcam)}
+                        >{running ? 'Stop' : (deviceMode === 'upload' ? 'Load video' : 'Start')}</button>
+                      );
+                    })()}
+                    <label className="bm-btn" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      Upload
+                      <input type="file" accept="video/*,image/*" onChange={handleFileUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" aria-label="Upload a video or image" />
+                    </label>
+                    <button className={`bm-btn ${pulseView ? 'on' : ''}`} onClick={() => setPulseView(v => !v)} title="Experimental: colour-magnify the pulse in the face">
+                      Pulse view{pulseView ? ' on' : ''}
                     </button>
                   </div>
-                )}
+                </div>
 
-                {/* Controller section */}
-                <div className="flex flex-col gap-4">
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-[10px] text-zinc-450 font-black uppercase tracking-wider">Patient Identification (Full Name)</label>
-                    <input 
-                      type="text" 
-                      placeholder="Enter patient full name (e.g. John Doe)..." 
-                      value={patientName}
-                      onChange={(e) => setPatientName(e.target.value)}
-                      className="bg-[#02040a] border border-zinc-800 rounded-lg text-sm p-2.5 text-zinc-300 outline-none focus:border-cyan-500 transition-colors"
-                    />
-                  </div>
+                <SweepTrace
+                  samples={metrics.ppg_signal || []}
+                  color={PARAM.hr}
+                  label="Pleth · camera rPPG"
+                  rate={metrics.sqi > 0 ? `SQI ${Number(metrics.sqi).toFixed(0)}%` : 'calibrating'}
+                />
+              </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-[10px] text-zinc-450 font-black uppercase tracking-wider">Optical Device</label>
-                      <select
-                        value={deviceMode === 'upload' ? '__upload__' : (selectedCamera !== null ? selectedCamera : '')}
-                        onChange={(e) => {
-                          if (e.target.value === '__upload__') {
-                            setDeviceMode('upload');
-                          } else {
-                            setDeviceMode('camera');
-                            setSelectedCamera(Number(e.target.value));
-                          }
-                        }}
-                        className="bg-[#02040a] border border-zinc-800 rounded-lg text-sm p-2.5 text-zinc-300 outline-none focus:border-cyan-500 transition-colors cursor-pointer"
-                      >
-                        {cameras.map((cam) => (
-                          <option key={cam.index} value={cam.index} style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>{cam.label}</option>
-                        ))}
-                        {cameras.length === 0 && <option value="" style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>No hardware found</option>}
-                        <option value="__upload__" style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>Uploaded Video</option>
-                      </select>
-                    </div>
-
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-[10px] text-zinc-450 font-black uppercase tracking-wider">Interface controls</label>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={deviceMode === 'upload' ? handleStartUploadedVideo : handleStartWebcam}
-                          className="flex-1 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 hover:border-cyan-500/60 font-bold text-xs py-2.5 px-3 rounded-lg transition-all shadow-glow-cyan"
-                        >
-                          {deviceMode === 'upload' ? 'Load Video' : 'Init Sensors'}
-                        </button>
-                        <button
-                          onClick={metrics.is_live ? handleReleaseCamera : (deviceMode === 'upload' ? handleStartUploadedVideo : handleStartWebcam)}
-                          title={metrics.is_live ? "Release Hardware (Stop)" : "Initialize Hardware (Play)"}
-                          className={`px-4 py-2 border rounded-lg transition-colors flex items-center justify-center font-bold text-xs ${
-                            metrics.is_live
-                              ? 'bg-rose-950/20 hover:bg-rose-900/20 border-rose-800/40 text-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.1)]'
-                              : 'bg-emerald-950/20 hover:bg-emerald-900/20 border-emerald-800/40 text-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.1)]'
-                          }`}
-                        >
-                          {metrics.is_live ? '⏹' : '▶'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {deviceMode === 'upload' && (
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-[10px] text-zinc-450 font-black uppercase tracking-wider">Uploaded Video (select which one to play)</label>
-                      <select
-                        value={selectedUploadedVideo}
-                        onChange={(e) => setSelectedUploadedVideo(e.target.value)}
-                        className="bg-[#02040a] border border-zinc-800 rounded-lg text-sm p-2.5 text-zinc-300 outline-none focus:border-cyan-500 transition-colors cursor-pointer"
-                      >
-                        {uploadedVideos.length === 0 && (
-                          <option value="" style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>No videos uploaded yet</option>
-                        )}
-                        {uploadedVideos.map((v) => (
-                          <option key={v.filename} value={v.filename} style={{ backgroundColor: '#111827', color: '#e5e7eb' }}>
-                            {v.filename} ({v.modified})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-[10px] text-zinc-450 font-black uppercase tracking-wider">Upload Record (Video / Image)</label>
-                    <div className="relative border border-dashed border-zinc-850 hover:border-zinc-700 bg-[#02040a]/40 hover:bg-[#02040a]/75 rounded-lg p-4 text-center cursor-pointer transition-all">
-                      <input 
-                        type="file" 
-                        accept="video/*,image/*" 
-                        onChange={handleFileUpload}
-                        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                      />
-                      <div className="text-zinc-300 text-sm font-semibold">
-                        📂 Choose patient media file...
-                      </div>
-                      <p className="text-[9px] text-zinc-550 mt-1 uppercase tracking-wider font-mono">Supports MP4, webm, jpg, png</p>
-                    </div>
-                  </div>
-
-                  {uploadMessage.text && (
-                    <div className={`text-xs p-3 rounded-md font-bold ${
-                      uploadMessage.type === 'success' ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/30' : 'bg-rose-950/40 text-rose-400 border border-rose-900/30'
-                    }`}>
-                      {uploadMessage.text}
-                    </div>
-                  )}
-
-                  {/* ── Signal Telemetry & Diagnostics ── unique hospital-grade widget */}
-                  <div className="mt-2 bg-[#02040a]/60 border border-zinc-800/60 rounded-xl p-4">
-                    <div className="text-[9px] text-zinc-500 font-black uppercase tracking-widest mb-3 flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
-                        Signal Telemetry &amp; Diagnostics
-                      </div>
-                      <span className="font-mono text-[8px] text-zinc-650 bg-[#070b19] px-1.5 py-0.5 rounded border border-zinc-800">CHROM v2</span>
-                    </div>
-
-                    <div className="space-y-2 font-mono text-[10px]">
-                      <div className="flex justify-between items-center py-1 border-b border-zinc-800/30">
-                        <span className="text-zinc-500 uppercase">Camera Status</span>
-                        <span className={`font-black uppercase ${metrics.is_live ? 'text-emerald-450' : 'text-zinc-600'}`}>
-                          {metrics.is_live ? 'ACTIVE (30 FPS)' : 'OFFLINE'}
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center py-1 border-b border-zinc-800/30">
-                        <span className="text-zinc-500 uppercase">Face ROI Lock</span>
-                        <span className={`font-black uppercase ${metrics.face_detected ? 'text-cyan-450' : 'text-zinc-600'}`}>
-                          {metrics.face_detected ? 'LOCKED (142x44px)' : 'NO LOCK'}
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center py-1 border-b border-zinc-800/30">
-                        <span className="text-zinc-500 uppercase">Ambient Light</span>
-                        <span className={`font-black uppercase ${metrics.estimated_lux > 100 ? 'text-emerald-450' : 'text-amber-450'}`}>
-                          {metrics.estimated_lux} LUX ({metrics.estimated_lux > 100 ? 'OPTIMAL' : 'LOW'})
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center py-1 border-b border-zinc-800/30">
-                        <span className="text-zinc-500 uppercase">Signal Stability</span>
-                        <span className="text-white font-black">{metrics.stability > 0 ? `${metrics.stability.toFixed(0)}%` : '--'}</span>
-                      </div>
-                      <div className="flex justify-between items-center py-1">
-                        <span className="text-zinc-500 uppercase">Noise Level (SNR)</span>
-                        <span className="text-indigo-400 font-black">{metrics.snr_db > 0 ? `${Number(metrics.snr_db).toFixed(1)} dB` : '--'}</span>
-                      </div>
-                    </div>
-                  </div>
+              <div className="bm-right">
+                <ParamBlock
+                  tag="HR" unit="bpm" color={PARAM.hr}
+                  value={metrics.bpm > 0 ? metrics.bpm.toFixed(0) : '–?–'} hasValue={metrics.bpm > 0}
+                  hi={LIMITS.HR_HI} lo={LIMITS.HR_LO}
+                  status={metrics.bpm > 0 ? (hrC === 'NORMAL' ? 'Normal' : hrC === 'TACHYCARDIA' ? 'Tachycardia' : hrC === 'BRADYCARDIA' ? 'Bradycardia' : hrC.toLowerCase()) : (metrics.calibration_done ? 'Searching' : 'Calibrating')}
+                  conf={metrics.bpm > 0 ? Number(metrics.confidence) || 0 : null}
+                  alarm={metrics.bpm > 0 && (hrC === 'TACHYCARDIA' || hrC === 'BRADYCARDIA')}
+                  pulseSec={metrics.bpm > 0 ? 60 / metrics.bpm : undefined}
+                  trend={metrics.bpm}
+                />
+                <ParamBlock
+                  tag="RR" unit="breaths/min" color={PARAM.rr}
+                  value={metrics.rr > 0 ? Number(metrics.rr).toFixed(0) : '–?–'} hasValue={metrics.rr > 0}
+                  hi={LIMITS.RR_HI} lo={12}
+                  status={metrics.rr > 0 ? (rrC === 'NORMAL' ? 'Normal' : rrC === 'TACHYPNEA' ? 'Tachypnoea' : rrC === 'BRADYPNEA' ? 'Low rate' : rrC.toLowerCase()) : 'Needs ~30 s of signal'}
+                  conf={metrics.rr > 0 ? Number(metrics.rr_confidence) || 0 : null}
+                  foot={metrics.rr > 0 ? `${Number(metrics.rr).toFixed(1)}` : undefined}
+                  breatheSec={metrics.rr > 0 ? 60 / metrics.rr : undefined}
+                  trend={Number(metrics.rr) || 0}
+                />
+                <div className="bm-pair">
+                  <ParamBlock
+                    tag="STRESS" unit="Baevsky SI" color={PARAM.stress} size="lg"
+                    value={metrics.stress_index > 0 ? Number(metrics.stress_index).toFixed(0) : '–?–'} hasValue={metrics.stress_index > 0}
+                    hi={LIMITS.STRESS_HI} lo={null}
+                    status={metrics.stress_index > LIMITS.STRESS_HI ? 'Critical' : metrics.stress_index > LIMITS.STRESS_ELEV ? 'Elevated' : metrics.stress_index > 0 ? 'Optimal' : 'Waiting'}
+                    foot={Number(metrics.hrv) > 0 ? `HRV ${Number(metrics.hrv).toFixed(0)} ms` : undefined}
+                  />
+                  <ParamBlock
+                    tag="SQI" unit="signal quality %" color={PARAM.sqi} size="lg"
+                    value={metrics.sqi > 0 ? Number(metrics.sqi).toFixed(0) : '–?–'} hasValue={metrics.sqi > 0}
+                    hi={null} lo={LIMITS.SQI_MIN}
+                    status={metrics.sqi >= LIMITS.SQI_MIN ? 'Usable' : metrics.sqi > 0 ? 'Low confidence' : 'Waiting'}
+                    foot={metrics.snr_db ? `SNR ${Number(metrics.snr_db).toFixed(1)} dB` : undefined}
+                  />
                 </div>
               </div>
             </div>
 
-            {/* Right Hand side: Vital Signs grid & PPG Plot (shrunk to col-span-5) */}
-            <div className="lg:col-span-5 flex flex-col gap-6">
-              
-              {isTriageRunning && (
-                <div className="bg-[#090e1e]/80 border border-indigo-500/40 rounded-2xl p-5 backdrop-blur-xl shadow-xl flex items-center gap-4 animate-pulse">
-                  <div className="w-8 h-8 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin shrink-0"></div>
-                  <div>
-                    <h3 className="text-xs font-black text-indigo-400 uppercase tracking-widest">Clinical Crew Running</h3>
-                    <p className="text-[10px] text-zinc-450 uppercase font-bold mt-1 leading-relaxed">
-                      3-Agent pipeline is executing diagnostics, ESI acuity check, and saving record to Neon.
-                    </p>
+            {/* ── DETAILS DRAWER: telemetry, warnings, 30-second report ── */}
+            {detailsOpen && (
+              <div className="fixed inset-0 z-[60] flex justify-end" onClick={() => setDetailsOpen(false)}>
+                <div className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" />
+                <aside onClick={(e) => e.stopPropagation()} className="relative h-full w-full max-w-[460px] overflow-y-auto border-l border-white/10 p-5 shadow-2xl custom-scroll" style={{ background: 'var(--bg)' }}>
+                  <div className="mb-4 flex items-center justify-between">
+                    <h2 className="text-base font-semibold text-white">Session details</h2>
+                    <button onClick={() => setDetailsOpen(false)} className="rounded-md border border-white/10 px-2.5 py-1 text-sm text-zinc-400 hover:text-white">✕</button>
                   </div>
-                </div>
-              )}
-              
-              {/* VITALS GRID */}
-              <div className="bg-[#0d1117]/70 border border-white/[0.06] rounded-2xl p-6 backdrop-blur-xl shadow-lg relative">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wide flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400/80"></span>
-                    Optical Physiology Indicators
-                  </h2>
-                  {/* 30-sec session acquisition timer */}
-                  <div className="flex items-center gap-2 ml-auto">
-                    {metrics.calibration_done && sessionTimer > 0 && (
-                      <div className="flex items-center gap-2 bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-1.5">
-                        <svg width="26" height="26" viewBox="0 0 36 36" className="-rotate-90">
-                          <circle cx="18" cy="18" r="14" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="3"/>
-                          <circle cx="18" cy="18" r="14" fill="none" stroke="#22d3ee" strokeWidth="3"
-                            strokeDasharray={`${2 * Math.PI * 14}`}
-                            strokeDashoffset={`${2 * Math.PI * 14 * (1 - sessionTimer / 30)}`}
-                            strokeLinecap="round" style={{transition: 'stroke-dashoffset 1s linear'}}/>
-                          <text x="18" y="23" textAnchor="middle" fill="#22d3ee" fontSize="10" fontWeight="600"
-                            style={{transform: 'rotate(90deg)', transformOrigin: '18px 18px'}}>{sessionTimer}</text>
-                        </svg>
-                        <div className="text-right">
-                          <div className="text-[9px] text-zinc-500 font-medium uppercase tracking-wide">Scan window</div>
-                          <div className="text-[11px] text-cyan-400 font-semibold">{sessionTimer}s remaining</div>
-                        </div>
-                      </div>
-                    )}
-                    {sessionTimer === 0 && !reportLoading && sessionReport && (
-                      <div className="text-[10px] bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                        Report ready
-                      </div>
-                    )}
-                    {reportLoading && (
-                      <div className="text-[10px] text-cyan-400 font-semibold flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
-                        Compiling report...
-                      </div>
-                    )}
+                  <div className="mb-4 space-y-2 rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 font-mono text-xs">
+                    <div className="flex justify-between"><span className="text-zinc-500">Camera</span><span className={metrics.is_live ? 'text-emerald-400' : 'text-zinc-500'}>{metrics.is_live ? 'ACTIVE' : 'OFFLINE'}</span></div>
+                    <div className="flex justify-between"><span className="text-zinc-500">Face ROI</span><span className={metrics.face_detected ? 'text-cyan-400' : 'text-zinc-500'}>{metrics.face_detected ? 'LOCKED' : 'NO LOCK'}</span></div>
+                    <div className="flex justify-between"><span className="text-zinc-500">Ambient light</span><span className="text-white">{metrics.estimated_lux} lux ({metrics.estimated_lux > 100 ? 'optimal' : 'low'})</span></div>
+                    <div className="flex justify-between"><span className="text-zinc-500">Stability</span><span className="text-white">{metrics.stability_indicator} ({Number(metrics.stability).toFixed(1)} bpm)</span></div>
+                    <div className="flex justify-between"><span className="text-zinc-500">SNR</span><span className="text-white">{metrics.snr_db > 0 ? `${Number(metrics.snr_db).toFixed(1)} dB` : '--'}</span></div>
                   </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-
-                  {/* HEART RATE */}
-                  <div className={`bg-white/[0.02] border rounded-xl p-5 flex flex-col justify-between hover:border-white/20 transition-all ${
-                    metrics.classification === 'TACHYCARDIA' ? 'border-rose-500/30' :
-                    metrics.classification === 'NORMAL' ? 'border-emerald-500/20' :
-                    'border-white/[0.06]'
-                  }`}>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wide">Heart Rate</span>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-rose-400/70">
-                        <path d="M12 21s-7.1-4.4-9.6-8.7C.6 8.9 2 5.2 5.6 5.2c2 0 3.4 1.2 4.1 2.2.7-1 2.1-2.2 4.1-2.2 3.5 0 5 3.7 3.2 7.1C19.1 16.6 12 21 12 21z"/>
-                      </svg>
+                  {metrics.warnings && metrics.warnings.length > 0 && (
+                    <div className="mb-4 rounded-xl border border-rose-500/25 bg-rose-500/[0.07] p-4">
+                      <div className="mb-1.5 text-xs font-semibold text-rose-400">⚠ Acquisition warnings</div>
+                      <ul className="list-inside list-disc text-xs font-medium leading-relaxed text-rose-300/90">{metrics.warnings.map((w, idx) => <li key={idx}>{w}</li>)}</ul>
                     </div>
-                    <div className="my-3 flex items-baseline gap-2">
-                      <span className="text-4xl font-semibold text-white tracking-tight leading-none font-mono">
-                        {metrics.bpm > 0 ? metrics.bpm : '--'}
-                      </span>
-                      <span className="text-[11px] text-zinc-500 font-medium uppercase tracking-wide">BPM</span>
-                    </div>
-                    <div className="flex items-center justify-between border-t border-white/[0.06] pt-2">
-                      <span className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
-                        metrics.classification === 'NORMAL' ? 'bg-emerald-500/10 text-emerald-400' :
-                        metrics.classification === 'TACHYCARDIA' ? 'bg-rose-500/10 text-rose-400' :
-                        metrics.classification === 'BRADYCARDIA' ? 'bg-cyan-500/10 text-cyan-400' :
-                        'bg-white/5 text-zinc-500'
-                      }`}>
-                        {metrics.classification}
-                      </span>
-                      <span className="text-[10px] text-zinc-500 font-mono">Conf {typeof metrics.confidence === 'number' ? metrics.confidence.toFixed(1) : metrics.confidence}%</span>
-                    </div>
-                  </div>
-
-                  {/* RESPIRATORY RATE */}
-                  <div className={`bg-white/[0.02] border rounded-xl p-5 flex flex-col justify-between hover:border-white/20 transition-all ${
-                    metrics.rr_classification === 'TACHYPNEA' ? 'border-rose-500/30' :
-                    metrics.rr_classification === 'NORMAL' ? 'border-emerald-500/20' :
-                    'border-white/[0.06]'
-                  }`}>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wide">Respiration</span>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-cyan-400/70">
-                        <path d="M9.6 4.6a2 2 0 1 1 1.4 3.4H2m10.6 11.4a2 2 0 1 0 1.4-3.4H2m15.7-8.3a2.5 2.5 0 1 1 1.8 4.3H2"/>
-                      </svg>
-                    </div>
-                    <div className="my-3 flex items-baseline gap-2 overflow-hidden">
-                      <span className="text-4xl font-semibold text-white tracking-tight leading-none font-mono truncate">
-                        {metrics.rr > 0 ? Number(metrics.rr).toFixed(1) : '--'}
-                      </span>
-                      <span className="text-[11px] text-zinc-500 font-medium uppercase tracking-wide shrink-0">B/min</span>
-                    </div>
-                    <div className="flex items-center justify-between border-t border-white/[0.06] pt-2">
-                      <span className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
-                        metrics.rr_classification === 'NORMAL' ? 'bg-emerald-500/10 text-emerald-400' :
-                        metrics.rr_classification === 'TACHYPNEA' ? 'bg-rose-500/10 text-rose-400' :
-                        metrics.rr_classification === 'BRADYPNEA' ? 'bg-cyan-500/10 text-cyan-400' :
-                        'bg-white/5 text-zinc-500'
-                      }`}>
-                        {metrics.rr_classification}
-                      </span>
-                      <span className="text-[10px] text-zinc-500 font-mono">Conf {typeof metrics.rr_confidence === 'number' ? Number(metrics.rr_confidence).toFixed(1) : metrics.rr_confidence}%</span>
-                    </div>
-                  </div>
-
-                  {/* STRESS INDEX */}
-                  <div className={`bg-white/[0.02] border rounded-xl p-5 flex flex-col justify-between hover:border-white/20 transition-all ${
-                    metrics.stress_index > 150 ? 'border-rose-500/30' :
-                    metrics.stress_index > 80 ? 'border-amber-500/25' :
-                    'border-white/[0.06]'
-                  }`}>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wide">Stress Index</span>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-amber-400/70">
-                        <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>
-                      </svg>
-                    </div>
-                    <div className="my-3 flex items-baseline gap-2 overflow-hidden">
-                      <span className={`font-semibold text-white tracking-tight leading-none font-mono ${
-                        metrics.stress_index > 999 ? 'text-2xl' : 'text-4xl'
-                      }`}>
-                        {metrics.stress_index > 0 ? Number(metrics.stress_index).toFixed(0) : '--'}
-                      </span>
-                      <span className="text-[11px] text-zinc-500 font-medium uppercase tracking-wide shrink-0">Index</span>
-                    </div>
-                    <div className="flex items-center justify-between border-t border-white/[0.06] pt-2">
-                      <span className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
-                        metrics.stress_index > 150 ? 'bg-rose-500/10 text-rose-400' :
-                        metrics.stress_index > 80 ? 'bg-amber-500/10 text-amber-400' :
-                        metrics.stress_index > 0 ? 'bg-emerald-500/10 text-emerald-400' :
-                        'bg-white/5 text-zinc-500'
-                      }`}>
-                        {metrics.stress_index > 150 ? 'Critical' : metrics.stress_index > 80 ? 'Elevated' : metrics.stress_index > 0 ? 'Optimal' : '--'}
-                      </span>
-                      <span className="text-[10px] text-zinc-500 font-mono">HRV {typeof metrics.hrv === 'number' ? Number(metrics.hrv).toFixed(0) : '--'}ms</span>
-                    </div>
-                  </div>
-
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-                  {/* SIGNAL QUALITY & SNR */}
-                  <div className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-4 flex items-center justify-between hover:border-white/20 transition-all">
-                    <div>
-                      <span className="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Signal SNR</span>
-                      <div className="text-xl font-semibold text-white font-mono mt-1">{metrics.snr_db ? `${metrics.snr_db.toFixed(1)} dB` : '--'}</div>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Stability</span>
-                      <div className="text-sm font-medium text-cyan-400 font-mono mt-1">{metrics.stability_indicator} ({metrics.stability.toFixed(1)} bpm)</div>
-                    </div>
-                  </div>
-
-                  {/* LIGHT & MOTION */}
-                  <div className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-4 flex items-center justify-between hover:border-white/20 transition-all">
-                    <div>
-                      <span className="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Acquisition Environment</span>
-                      <div className="text-sm font-medium text-zinc-300 mt-1 flex flex-col gap-0.5">
-                        <span>Luminance: <strong className="text-white font-mono">{metrics.estimated_lux} lux</strong></span>
-                        <span>Motion: <strong className="text-white font-mono">{metrics.motion_delta.toFixed(1)}</strong></span>
-                      </div>
-                    </div>
-                    <div className="text-[10px] text-zinc-550 text-right leading-relaxed font-medium">
-                      <div>Limit: &gt;100 lux</div>
-                      <div>Motion: &lt;15.0</div>
-                    </div>
-                  </div>
-                </div>
-
-                {metrics.warnings && metrics.warnings.length > 0 && (
-                  <div className="mt-4 p-4 bg-rose-500/[0.06] border border-rose-500/20 rounded-xl flex flex-col gap-1.5">
-                    <div className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
-                      ⚠ Telemetry acquisition warnings
-                    </div>
-                    <ul className="list-disc list-inside text-xs text-rose-300/90 font-medium leading-relaxed">
-                      {metrics.warnings.map((w, idx) => <li key={idx}>{w}</li>)}
-                    </ul>
-                  </div>
-                )}
-              </div>
-
-              {/* 30-SECOND SESSION REPORT */}
-              {sessionReport && (
+                  )}
+                  {isTriageRunning && <div className="mb-4 rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-xs font-semibold text-indigo-300 animate-pulse">Clinical Crew running: diagnostics, ESI acuity check and saving the record…</div>}
+                  {sessionReport && (
                 <div className="bg-[#090e1e]/80 border border-emerald-800/40 rounded-2xl p-5 backdrop-blur-xl shadow-xl animate-in fade-in duration-500">
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
@@ -1587,237 +1065,146 @@ export default function Home() {
                   </div>
                 </div>
               )}
-
-              {/* RPPG CANVAS GRAPH */}
-
-              <div className="bg-[#090e1e]/60 border border-zinc-800/80 rounded-2xl p-6 backdrop-blur-xl shadow-xl flex-1 flex flex-col relative overflow-hidden">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-xs font-black text-zinc-400 uppercase tracking-widest flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse shadow-glow-cyan"></span>
-                    rPPG Photonic Waveform analysis
-                  </h2>
-                  <span className="text-xs text-zinc-500 font-mono tracking-widest uppercase">
-                    {metrics.sqi > 0 ? `SQI: ${metrics.sqi}%` : 'Calibrating signals...'}
-                  </span>
-                </div>
-                
-                <div className="relative bg-[#02040a] border border-zinc-800 rounded-xl p-2 flex items-center justify-center overflow-hidden flex-1 min-h-[220px]">
-                  <canvas 
-                    ref={canvasRef} 
-                    width={640} 
-                    height={220} 
-                    className="w-full h-full block"
-                  />
-                  
-                  {metrics.status === 'CALIBRATING' && (
-                    <div className="absolute inset-0 bg-[#02040ad0]/95 flex flex-col items-center justify-center p-4">
-                      <div className="w-full max-w-sm bg-zinc-900 rounded-full h-2 overflow-hidden border border-zinc-800 mb-4 relative">
-                        <div 
-                          className="bg-gradient-to-r from-cyan-400 to-indigo-500 h-full rounded-full transition-all duration-300 shadow-[0_0_10px_rgba(6,182,212,0.6)]"
-                          style={{ width: `${metrics.calibration_progress}%` }}
-                        ></div>
-                      </div>
-                      <span className="text-xs text-cyan-400 font-black tracking-widest animate-pulse uppercase">
-                        Calibrating Photonic Sensors ({metrics.calibration_progress}%)
-                      </span>
-                    </div>
-                  )}
-                </div>
-                
-                <div className="flex items-center justify-between text-[10px] text-zinc-550 mt-2 font-mono uppercase tracking-widest font-bold">
-                  <span>0.00s</span>
-                  <span>10s Rolling Sensor Buffer</span>
-                  <span>10.00s</span>
-                </div>
+                  {!sessionReport && <p className="text-xs text-zinc-500">The 30-second clinical report appears here after a full scan window.</p>}
+                </aside>
               </div>
-
-            </div>
-
+            )}
           </div>
-        )}
+          );
+        })()}
 
-        {/* VIEW 2: CENTRAL TRIAGE QUEUE */}
-        {activeTab === 'queue' && (
-          <div className="bg-[#0d1117]/70 border border-white/[0.06] rounded-2xl p-6 backdrop-blur-xl shadow-lg flex flex-col h-[calc(100vh-48px)] relative">
-
-            <div className="flex items-center justify-between border-b border-white/[0.06] pb-4 mb-5 flex-shrink-0">
+        {/* VIEW 2: TRIAGE DISPATCH — acuity-sorted list + selected patient, one screen */}
+        {activeTab === 'queue' && (() => {
+          const sel = triageQueue.find(p => p.id === expandedPatientId) || triageQueue[0] || null;
+          const counts = [1, 2, 3, 4, 5].map(l => triageQueue.filter(p => p.esi_level === l).length);
+          const total = triageQueue.length || 1;
+          const esiName = ['', 'Resuscitation', 'Emergent', 'Urgent', 'Less urgent', 'Non-urgent'];
+          return (
+          <div className="tq-root">
+            <div className="tq-head">
               <div>
-                <h2 className="text-base font-semibold text-white flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
-                  Central Dispatch Triage Queue
-                </h2>
-                <p className="text-[11px] text-zinc-500 font-medium mt-1">Dynamically sorted by acuity — ESI 1 &amp; 2 prioritize to the top</p>
+                <h1 className="tq-title">Triage dispatch</h1>
+                <p className="tq-sub">{triageQueue.length} assessed · sorted by acuity, ESI 1 first</p>
               </div>
-              <button
-                onClick={handleClearQueue}
-                className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border border-rose-500/20 text-xs font-semibold py-2 px-5 rounded-lg transition-colors"
-              >
-                Flush queue
-              </button>
+              <div className="tq-dist" aria-label="Patients by ESI level">
+                {counts.map((n, i) => n > 0 && (
+                  <span key={i} className={`tq-dist-seg esi-${i + 1}`} style={{ flexGrow: n / total }} title={`ESI ${i + 1}: ${n}`}>
+                    <b>{n}</b> ESI {i + 1}
+                  </span>
+                ))}
+              </div>
+              <button onClick={handleClearQueue} className="tq-flush">Clear queue</button>
             </div>
 
-            <div className="flex-1 overflow-y-auto custom-scroll flex flex-col gap-3 pr-1 min-h-0">
-              {triageQueue.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center py-24">
-                  <div className="w-14 h-14 mx-auto mb-4 flex items-center justify-center rounded-full bg-white/[0.04] border border-white/[0.06]">
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-zinc-500"><path d="M9 2h6a1 1 0 011 1v2H8V3a1 1 0 011-1z"/><path d="M4 7a2 2 0 012-2h12a2 2 0 012 2v13a2 2 0 01-2 2H6a2 2 0 01-2-2V7z"/><path d="M9 12h6M9 16h6"/></svg>
-                  </div>
-                  <p className="text-sm font-semibold text-zinc-300">Clinical queue empty</p>
-                  <p className="text-[11px] text-zinc-500 mt-1.5">Processed ESI patient records will compile here.</p>
-                </div>
-              ) : (
-                triageQueue.map((patient) => {
-                  const isExpanded = expandedPatientId === patient.id;
-                  return (
-                  <div
-                    key={patient.id}
-                    className={`border rounded-xl p-5 bg-white/[0.02] hover:bg-white/[0.04] transition-all flex flex-col relative flex-shrink-0 ${
-                      patient.is_shock ? 'border-rose-500/30' : 'border-white/[0.06] hover:border-white/20'
-                    }`}
+            {triageQueue.length === 0 ? (
+              <div className="tq-empty">
+                <strong>No one is waiting</strong>
+                <span>Each completed scan lands here with its ESI level, ordered by acuity.</span>
+              </div>
+            ) : (
+            <div className="tq-grid">
+              <div className="tq-list custom-scroll" role="listbox" aria-label="Patients">
+                {triageQueue.map((p) => (
+                  <button
+                    key={p.id} role="option" aria-selected={sel?.id === p.id}
+                    onClick={() => setExpandedPatientId(p.id)}
+                    className={`tq-row ${sel?.id === p.id ? 'on' : ''}`}
                   >
-                    {/* Urgency Sidebar Indicator */}
-                    <div className={`absolute left-0 top-0 bottom-0 w-1 ${
-                      patient.esi_level === 1 ? 'bg-red-500' :
-                      patient.esi_level === 2 ? 'bg-orange-500' :
-                      patient.esi_level === 3 ? 'bg-yellow-500' :
-                      patient.esi_level === 4 ? 'bg-emerald-500' :
-                      'bg-cyan-500'
-                    }`}></div>
+                    <span className={`tq-orb esi-${p.esi_level}`}>{p.esi_level}</span>
+                    <span className="tq-row-main">
+                      <span className="tq-row-name">{p.name}{p.is_shock && <i className="tq-shock">Shock</i>}</span>
+                      <span className="tq-row-dx">{p.primary_diagnosis}</span>
+                    </span>
+                    <span className="tq-row-vitals">
+                      <span style={{ color: 'var(--sig-hr)' }}>{p.heart_rate != null ? Number(p.heart_rate).toFixed(0) : '–'}</span>
+                      <span style={{ color: 'var(--sig-rr)' }}>{p.respiration != null ? Number(p.respiration).toFixed(0) : '–'}</span>
+                    </span>
+                    <span className="tq-row-time">{(p.timestamp || '').slice(11, 16)}</span>
+                  </button>
+                ))}
+              </div>
 
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                      <div className="flex-1 pl-3">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <span className="font-semibold text-white text-base">{patient.name}</span>
-                          <span className="text-xs font-mono text-zinc-500">{patient.timestamp}</span>
-                          {patient.is_shock && (
-                            <span className="text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2.5 py-0.5 rounded font-semibold">
-                              Compensated shock alert
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="mt-2 text-sm text-zinc-300 leading-relaxed max-w-[1200px] font-medium">
-                          {patient.triage_summary}
-                        </div>
-
-                        <div className="mt-3.5 flex flex-wrap items-center gap-5 text-[10px] text-zinc-500 font-medium">
-                          <span>Record ID: <strong className="text-zinc-300 font-mono font-medium">{patient.id}</strong></span>
-                          <span>Source: <strong className="text-zinc-300 font-mono font-medium">{patient.video_path}</strong></span>
-                          <span>Diagnosis: <strong className="text-indigo-400 font-medium">{patient.primary_diagnosis}</strong></span>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-row md:flex-col items-center gap-3 self-start md:self-auto pl-3 md:pl-0">
-                        <div className="flex items-center gap-2">
-                          <div className={`border rounded-lg py-2 px-4 text-center min-w-[90px] ${getEsiClass(patient.esi_level)}`}>
-                            <div className="text-[9px] uppercase font-medium tracking-wide opacity-80">ESI Level</div>
-                            <div className="text-xl font-semibold font-mono leading-none mt-1">{patient.esi_level}</div>
-                          </div>
-                          <button
-                            onClick={() => setExpandedPatientId(isExpanded ? null : patient.id)}
-                            title={isExpanded ? 'Hide vitals' : 'Show vitals'}
-                            className={`p-1.5 rounded-lg border transition-colors ${
-                              isExpanded ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400' : 'bg-white/[0.02] border-white/[0.08] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.05]'
-                            }`}
-                          >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}>
-                              <polyline points="6 9 12 15 18 9"/>
-                            </svg>
-                          </button>
-                        </div>
-                        <div className="bg-white/[0.03] border border-white/[0.08] text-zinc-300 font-mono text-[10px] px-3 py-1.5 rounded text-center min-w-[90px] font-medium">
-                          Score: {patient.priority_score}
-                        </div>
-                      </div>
+              {sel && (
+                <article className="tq-detail custom-scroll">
+                  <div className="tq-detail-top">
+                    <span className={`tq-orb big esi-${sel.esi_level}`}>{sel.esi_level}</span>
+                    <div className="min-w-0">
+                      <div className="tq-detail-esi">ESI {sel.esi_level} · {esiName[sel.esi_level] || ''}</div>
+                      <h2 className="tq-detail-name">{sel.name}</h2>
+                      <div className="tq-detail-meta">{sel.timestamp} · priority {sel.priority_score}/100</div>
                     </div>
-
-                    {isExpanded && (
-                      <div className="mt-4 pt-4 pl-3 border-t border-white/[0.06] grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <div className="bg-white/[0.02] border border-white/[0.06] rounded-lg p-3 text-center">
-                          <div className="text-[9px] text-zinc-500 font-semibold uppercase tracking-wide">Heart Rate</div>
-                          <div className="text-lg font-semibold text-white font-mono mt-1">{patient.heart_rate != null ? `${Number(patient.heart_rate).toFixed(1)}` : '--'} <span className="text-[10px] text-zinc-500 font-medium">bpm</span></div>
-                        </div>
-                        <div className="bg-white/[0.02] border border-white/[0.06] rounded-lg p-3 text-center">
-                          <div className="text-[9px] text-zinc-500 font-semibold uppercase tracking-wide">Respiration</div>
-                          <div className="text-lg font-semibold text-white font-mono mt-1">{patient.respiration != null ? `${Number(patient.respiration).toFixed(1)}` : '--'} <span className="text-[10px] text-zinc-500 font-medium">br/min</span></div>
-                        </div>
-                        <div className="bg-white/[0.02] border border-white/[0.06] rounded-lg p-3 text-center">
-                          <div className="text-[9px] text-zinc-500 font-semibold uppercase tracking-wide">HRV</div>
-                          <div className="text-lg font-semibold text-white font-mono mt-1">{patient.hrv != null ? `${Number(patient.hrv).toFixed(1)}` : '--'} <span className="text-[10px] text-zinc-500 font-medium">ms</span></div>
-                        </div>
-                        <div className="bg-white/[0.02] border border-white/[0.06] rounded-lg p-3 text-center">
-                          <div className="text-[9px] text-zinc-500 font-semibold uppercase tracking-wide">Stress Index</div>
-                          <div className="text-lg font-semibold text-white font-mono mt-1">{patient.stress_index != null ? `${Number(patient.stress_index).toFixed(0)}` : '--'}</div>
-                        </div>
-                      </div>
-                    )}
                   </div>
-                  );
-                })
+                  {sel.is_shock && <div className="tq-alert">Compensated shock pattern: manual review required</div>}
+                  <div className="tq-dx">{sel.primary_diagnosis}</div>
+                  <div className="tq-vitals">
+                    {[
+                      { k: 'HR', u: 'bpm', v: sel.heart_rate, d: 0, c: 'var(--sig-hr)' },
+                      { k: 'RR', u: 'br/min', v: sel.respiration, d: 1, c: 'var(--sig-rr)' },
+                      { k: 'HRV', u: 'ms', v: sel.hrv, d: 0, c: 'var(--sig-sqi)' },
+                      { k: 'Stress', u: 'index', v: sel.stress_index, d: 0, c: 'var(--sig-stress)' },
+                    ].map(x => (
+                      <div key={x.k} className="tq-vital" style={{ ['--pc' as string]: x.c }}>
+                        <span className="tq-vital-k">{x.k}</span>
+                        <span className="tq-vital-v">{x.v != null ? Number(x.v).toFixed(x.d) : '–'}</span>
+                        <span className="tq-vital-u">{x.u}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="tq-summary">{sel.triage_summary}</p>
+                  <div className="tq-foot">Record {sel.id} · {sel.video_path}</div>
+                </article>
               )}
             </div>
-
+            )}
           </div>
-        )}
+          );
+        })()}
 
-        {/* VIEW 3: AGENT CREW PANEL */}
+        {/* VIEW 3: CLINICAL CREW — the pipeline as it really runs: the engine decides, agents explain */}
         {activeTab === 'crew' && (
-          <div className="bg-[#0d1117]/70 border border-white/[0.06] rounded-2xl p-6 backdrop-blur-xl shadow-lg flex flex-col h-[calc(100vh-48px)] relative">
-
-            <div className="flex items-center justify-between border-b border-white/[0.06] pb-4 mb-5 flex-shrink-0">
+          <div className="cr-root">
+            <div className="tq-head">
               <div>
-                <h2 className="text-base font-semibold text-white flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
-                  Multi-Agent Clinical Intelligence Crew
-                </h2>
-                <p className="text-[11px] text-zinc-500 font-medium mt-1">Execution logs of the 3-agent decoupled triage pipeline</p>
+                <h1 className="tq-title">Clinical crew</h1>
+                <p className="tq-sub">The deterministic engine sets ESI, shock and priority. Three agents explain it.</p>
               </div>
-
               <button
                 onClick={() => handleRunTriage()}
                 disabled={isTriageRunning || metrics.status === 'DISCONNECTED' || triageAutoRan}
                 title={triageAutoRan ? 'Triage already ran automatically for this captured session' : undefined}
-                className="bg-indigo-500/10 hover:bg-indigo-500/20 disabled:bg-white/[0.03] disabled:text-zinc-500 disabled:cursor-not-allowed text-indigo-400 border border-indigo-500/25 disabled:border-white/[0.06] font-semibold text-sm py-2.5 px-5 rounded-xl transition-colors flex items-center gap-2.5"
+                className="cr-run"
               >
-                {isTriageRunning ? (
-                  <>
-                    <span className="w-3.5 h-3.5 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin"></span>
-                    Negotiating...
-                  </>
-                ) : triageAutoRan ? (
-                  <>Already dispatched</>
-                ) : (
-                  <>Kickoff Triage Crew</>
-                )}
+                {isTriageRunning ? 'Running…' : triageAutoRan ? 'Already dispatched' : 'Run triage crew'}
               </button>
             </div>
 
-            {/* Agent selecting buttons */}
-            <div className="flex border-b border-white/[0.06] mb-5 flex-shrink-0">
-              <button
-                onClick={() => setActiveAgentTab('perception')}
-                className={`flex-1 py-3 text-xs font-semibold transition-all border-b-2 ${
-                  activeAgentTab === 'perception' ? 'text-cyan-400 border-cyan-400' : 'text-zinc-500 border-transparent hover:text-zinc-300'
-                }`}
-              >
-                Perception Agent
-              </button>
-              <button
-                onClick={() => setActiveAgentTab('diagnostic')}
-                className={`flex-1 py-3 text-xs font-semibold transition-all border-b-2 ${
-                  activeAgentTab === 'diagnostic' ? 'text-amber-400 border-amber-400' : 'text-zinc-500 border-transparent hover:text-zinc-300'
-                }`}
-              >
-                Diagnostic Agent
-              </button>
-              <button
-                onClick={() => setActiveAgentTab('coordinator')}
-                className={`flex-1 py-3 text-xs font-semibold transition-all border-b-2 ${
-                  activeAgentTab === 'coordinator' ? 'text-indigo-400 border-indigo-400' : 'text-zinc-500 border-transparent hover:text-zinc-300'
-                }`}
-              >
-                Coordinator Agent
-              </button>
+            <div className={`cr-flow ${isTriageRunning ? 'live' : ''}`}>
+              <div className="cr-node src">
+                <span className="cr-node-k">Camera vitals</span>
+                <span className="cr-node-v">{lastTriageResult?.heart_rate != null ? `${Number(lastTriageResult.heart_rate).toFixed(0)} bpm` : metrics.bpm > 0 ? `${metrics.bpm.toFixed(0)} bpm` : '—'}</span>
+                <span className="cr-node-s">rPPG · HR, RR, HRV, stress</span>
+              </div>
+              <span className="cr-link" aria-hidden />
+              <div className="cr-node engine">
+                <span className="cr-node-k">Clinical engine</span>
+                <span className="cr-node-v">{lastTriageResult ? `ESI ${lastTriageResult.esi_level} · ${lastTriageResult.priority_score}` : '—'}</span>
+                <span className="cr-node-s">Rules, no AI · decides acuity</span>
+              </div>
+              <span className="cr-link" aria-hidden />
+              {([
+                ['perception', 'Perception agent', 'Reads the signals'],
+                ['diagnostic', 'Diagnostic agent', 'Explains the finding'],
+                ['coordinator', 'Coordinator agent', 'Writes the handover'],
+              ] as const).map(([id, k, s], i) => (
+                <React.Fragment key={id}>
+                  {i > 0 && <span className="cr-link" aria-hidden />}
+                  <button className={`cr-node agent ${activeAgentTab === id ? 'on' : ''}`} onClick={() => setActiveAgentTab(id)} aria-pressed={activeAgentTab === id}>
+                    <span className="cr-node-k">{k}</span>
+                    <span className="cr-node-v">{lastTriageResult ? 'Done' : isTriageRunning ? 'Working' : 'Idle'}</span>
+                    <span className="cr-node-s">{s}</span>
+                  </button>
+                </React.Fragment>
+              ))}
             </div>
 
             {/* Main console screen */}
@@ -1912,33 +1299,27 @@ export default function Home() {
         {activeTab === 'chat' && (() => {
           const selectedPatient = triageQueue.find(p => p.id === selectedPatientId) || null;
           return (
-          <div className="bg-[#0d1117]/70 border border-white/[0.06] rounded-2xl p-6 backdrop-blur-xl shadow-lg flex flex-col h-[calc(100vh-48px)] relative">
+          <div className="ch-root">
 
             {/* ARIA Header */}
-            <div className="flex items-center justify-between border-b border-white/[0.06] pb-5 mb-5 flex-shrink-0">
+            <div className="tq-head">
               <div className="flex items-center gap-4">
-                <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-md relative overflow-hidden shrink-0">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M12 2a10 10 0 110 20A10 10 0 0112 2z" opacity="0.3"/><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="2" fill="white"/></svg>
-                </div>
+                <span className="ch-avatar" aria-hidden>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 5h16v11H9l-5 4z" /><path d="M8 10h.01M12 10h.01M16 10h.01" /></svg>
+                </span>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-base font-semibold text-white tracking-tight">ARIA</h2>
-                    <span className="text-[9px] font-semibold uppercase tracking-wide bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded">Adaptive Real-time Intelligence for Acute-care</span>
-                  </div>
-                  <p className="text-[10px] text-zinc-500 font-medium uppercase tracking-wide mt-0.5">Powered by NVIDIA NIM · OCR document parsing · Multilingual · Evidence-based</p>
+                  <h1 className="tq-title">ARIA assistant</h1>
+                  <p className="tq-sub">Ask about a patient, a vital sign or a protocol. ARIA explains; the clinical engine decides acuity.</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 text-[10px] font-semibold">
-                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
-                <span className="text-indigo-400">ARIA Online</span>
-              </div>
+              <span className="ch-online"><i />Online · NVIDIA NIM</span>
             </div>
 
             {/* Body: patient panel (left) + chat (right) */}
-            <div className="flex-1 flex gap-5 min-h-0">
+            <div className="ch-body">
 
               {/* LEFT: patient record panel */}
-              <div className="w-64 flex-shrink-0 flex flex-col gap-3 min-h-0">
+              <div className="ch-side">
                 <div>
                   <label className="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Patient record</label>
                   <select
@@ -1957,7 +1338,7 @@ export default function Home() {
                   </select>
                 </div>
 
-                <div className="flex-1 bg-white/[0.02] border border-white/[0.06] rounded-xl p-4 overflow-y-auto custom-scroll min-h-0">
+                <div className="ch-card custom-scroll">
                   {!selectedPatient ? (
                     <div className="h-full flex flex-col items-center justify-center text-center py-8">
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-zinc-600 mb-2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
@@ -2016,15 +1397,15 @@ export default function Home() {
               </div>
 
               {/* RIGHT: chat window */}
-              <div className="flex-1 flex flex-col min-h-0">
+              <div className="ch-main">
                 {/* Chat message bubbles */}
-                <div className="flex-1 bg-white/[0.02] border border-white/[0.06] rounded-xl p-5 overflow-y-auto custom-scroll flex flex-col gap-4 mb-4 min-h-0">
+                <div className="ch-thread custom-scroll">
                   {chatHistory.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-zinc-550 text-center py-16">
-                      <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-500/15 to-purple-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 mx-auto">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="rgb(129,140,248)" strokeWidth="1.5"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                      <div className="ch-avatar big mb-4 mx-auto">
+                        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
                       </div>
-                      <p className="text-zinc-200 font-semibold text-sm">ARIA clinical intelligence ready</p>
+                      <p className="ch-empty-title">What would you like to know?</p>
                       <p className="text-[11px] text-zinc-500 mt-2 max-w-[460px] leading-relaxed font-medium">Ask clinical questions, request differential diagnoses, interpret vital signs, or attach photos of patient records and lab reports for instant OCR analysis.</p>
                       <div className="mt-5 flex flex-wrap gap-2 justify-center max-w-[500px]">
                         {['What does bradypnea indicate?', 'Explain ESI Level 2', 'Interpret high stress index', 'Normal rPPG heart rate range'].map(s => (
@@ -2035,15 +1416,9 @@ export default function Home() {
                   ) : (
                     chatHistory.map((msg, idx) => (
                       <div key={idx} className={`flex flex-col max-w-[85%] ${msg.role === 'user' ? 'self-end items-end' : 'self-start items-start'}`}>
-                        <span className="text-[9px] text-zinc-500 font-semibold uppercase tracking-wide mb-1.5">
-                          {msg.role === 'user' ? 'Clinician' : 'ARIA'}
-                        </span>
+                        <span className="ch-who">{msg.role === 'user' ? 'You' : 'ARIA'}</span>
 
-                        <div className={`p-4 rounded-xl text-sm leading-relaxed font-medium whitespace-pre-wrap ${
-                          msg.role === 'user'
-                            ? 'bg-indigo-500/10 text-zinc-100 border border-indigo-500/20 rounded-tr-none'
-                            : 'bg-white/[0.03] text-zinc-300 border border-white/[0.06] rounded-tl-none'
-                        }`}>
+                        <div className={`ch-msg ${msg.role === 'user' ? 'me' : 'ai'}`}>
                           {/* Attached Image inside Bubble */}
                           {msg.image && (
                             <div className="mb-3 max-w-[200px] rounded-lg overflow-hidden border border-white/10">
@@ -2087,7 +1462,7 @@ export default function Home() {
                     </div>
                   )}
 
-                  <div className="flex gap-3">
+                  <div className="ch-composer">
                     <input
                       type="file"
                       accept="image/*"
@@ -2118,12 +1493,12 @@ export default function Home() {
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
                       placeholder={selectedImage ? "Add clinical context or ask ARIA to parse this document..." : "Ask ARIA about vital signs, diagnoses, ESI levels, or clinical protocols..."}
-                      className="flex-1 bg-white/[0.02] border border-white/[0.08] rounded-xl text-sm px-4 text-zinc-200 outline-none focus:border-cyan-500/50 transition-colors"
+                      className="ch-input"
                     />
                     <button
                       type="submit"
                       disabled={isChatLoading || (!chatInput.trim() && !selectedImage)}
-                      className="bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/25 font-semibold text-xs py-3 px-6 rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="cr-run ch-send"
                     >
                       Send
                     </button>

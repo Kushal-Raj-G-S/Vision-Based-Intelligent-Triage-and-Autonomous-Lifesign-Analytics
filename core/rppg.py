@@ -49,6 +49,7 @@ import numpy as np
 from scipy import signal
 from scipy.signal import find_peaks
 from scipy.interpolate import CubicSpline
+from scipy.ndimage import median_filter
 
 log = logging.getLogger("vital.rppg")
 
@@ -81,6 +82,161 @@ _SNR_MID_THRESH  =  8.0  # dB
 # Respiration bandpass (Hz)
 _RESP_LOW  = 0.10   # 6 breaths/min
 _RESP_HIGH = 0.50   # 30 breaths/min
+
+# ── Respiratory rate: RIV-fusion parameters ──────────────────────────────────
+#
+# Why RR is estimated from beat-level features and NOT from band-passing the
+# raw PPG at _RESP_LOW.._RESP_HIGH (which is what this engine used to do):
+#
+# Measured against 53 x 8-min recordings of human-annotated breaths (BIDMC,
+# PhysioNet — see scripts/validate_rr_bidmc.py), the old raw-band argmax had
+# a correlation of r = -0.088 with ground truth. It carried no respiratory
+# information at all. 97% of its readings sat on one of the two band edges:
+# ~72% pinned to the 6 br/min floor, ~25% pinned to the 30 br/min ceiling.
+# Two independent contaminants, one at each end, caused that:
+#
+#   * Bottom: raw PPG in 0.1-0.5 Hz is dominated by 1/f baseline/perfusion
+#     drift. A 1/f power spectrum decreases monotonically, so an argmax over
+#     it MUST select the lowest bin. Not a tuning issue — arithmetic.
+#   * Top: the old resp filter was order=2 (12 dB/octave). The pulse at
+#     ~1.5 Hz is only ~1.6 octaves above the 0.5 Hz cutoff, so it received
+#     only ~19 dB of attenuation while being 30-40 dB STRONGER than the
+#     respiratory modulation. Leaked pulse energy therefore dominated the
+#     top of the band.
+#
+# True respiratory modulation is weak and sits buried between those two.
+# Widening the analysis window does not help (measured: MAE stayed 11-13
+# br/min from 10 s all the way to 60 s) because the problem was never
+# resolution — it was that the wanted signal wasn't in that band to begin
+# with.
+#
+# The replacement derives respiration from respiratory-induced variations
+# (RIVs) measured per heartbeat — the approach validated on this exact
+# dataset by Pimentel et al. (the BIDMC paper) and Karlen et al.
+# (SmartFusion). Three RIVs exist in the literature and are all extracted by
+# _extract_rivs, but only two are FUSED into the final estimate:
+#   RIAV  amplitude variation  (peak-to-trough height per beat)     — fused
+#   RIIV  intensity variation  (baseline level at each beat)        — fused
+#   RIFV  frequency variation  (beat-to-beat interval — i.e. RSA)   — NOT fused
+# RIFV is extracted (available for future use / diagnostics) but excluded
+# from fusion: measured alone on BIDMC it scored slope 0.09-0.14 and
+# corr ~0.08 against ground truth — essentially noise, likely because BIDMC's
+# ICU population (many ventilated patients) has blunted respiratory sinus
+# arrhythmia, which is exactly what RIFV depends on. Including it in the
+# median pulled the fused answer toward its bad guesses. See
+# _estimate_rr's docstring for the measured before/after.
+#
+# Each fused RIV is resampled onto a uniform _RIV_FS grid via CUBIC SPLINE
+# (not linear interpolation — see _riv_candidate's docstring for why) and
+# linearly detrended. Both edge-lock mechanisms die structurally, not by
+# tuning:
+#   * resampling to _RIV_FS puts Nyquist at _RIV_FS/2, so the pulse is
+#     decimated away BY CONSTRUCTION — no pulse energy remains to leak.
+#   * detrending removes the 1/f pedestal.
+# The surviving candidates are fused by median: agreement between channels
+# contaminated by DIFFERENT artefacts is far stronger evidence than any one
+# spectrum's peak height.
+#
+# Measured on BIDMC (all 53 recordings, deployment-faithful 30 fps
+# resampling, human-annotated breaths): per-window MAE 2.22 br/min,
+# session-level MAE 1.71 (median 0.34), 84.9% of recordings within 2 br/min.
+# Old code (raw-band argmax), same harness: r ~ 0 (no correlation with truth).
+_RR_WINDOW_SEC     = 60.0   # RR analysis buffer. Long ON PURPOSE: at 12 br/min
+                            # a 10 s window holds 2 breath cycles, which cannot
+                            # define a frequency. HR is unaffected — it keeps
+                            # slicing its own 10 s window (see _run_pipeline).
+_RR_MIN_WINDOW_SEC = 30.0   # don't emit any RR until this much signal exists
+_RIV_FS            = 4.0    # Hz — uniform RIV grid; Nyquist 2 Hz kills the pulse
+_RR_AGREE_TOL      = 2.0    # br/min spread between RIVs still treated as agreement
+_RR_MIN_BEATS      = 6      # fewer beats than this = no usable RIV series
+_RR_UPDATE_HZ      = 2.0    # recompute RR at most this often (it changes slowly;
+                            # 3 Welches + peak-detect on a 60 s buffer every
+                            # frame would stall the live MJPEG stream)
+# Confidence floor a reading must clear to enter rr_history. MUST stay equal to
+# core.clinical.RR_CONFIDENCE_LOW and the display gates in web/routes.py and
+# scripts/analyze_video.py — CLAUDE.md documents why those three already have
+# to move together: if they diverge, the number shown to a clinician and the
+# number the clinical engine reasons about disagree about the same reading.
+_RR_HISTORY_MIN_CONF = 30.0
+# RIIV-only rolling-median dedrift window, in seconds — see Finding 10 in
+# data/evolution/19-respiratory-rate-ground-truth.md. RIIV is the raw
+# per-beat baseline intensity of the projected PPG signal; on a real webcam
+# (unlike BIDMC/CapnoBase's contact-PPG-derived RIVs, which have no camera
+# exposure loop anywhere in their signal path) continuous auto-exposure/AGC
+# correction injects slow baseline drift with no respiratory content, and
+# the existing linear detrend + _sos_riv bandpass (2nd-order, soft rolloff)
+# were not enough to fully reject it — a live session showed RIIV's reported
+# rate sliding from ~10.6 to ~6.4 br/min in under 10s while RIAV stayed
+# rock-stable at ~12. A window here must beat _RESP_LOW's 10s period (6
+# br/min) to avoid attenuating genuine low-end respiration; 20s puts the
+# rolling-median high-pass's cutoff at ~0.05 Hz, comfortably below
+# _RESP_LOW=0.10 Hz.
+_RIIV_DEDRIFT_WINDOW_SEC = 20.0
+
+# ── Adaptive RR search band + low-zone peak rescue (Finding 11) ──────────────
+# A fixed 0.10-0.50 Hz search band cannot be right for every patient: children
+# breathe faster than 30 br/min (CapnoBase 0115/0018, true 35-40 br/min, were
+# outside it entirely and alone were ~48% of CapnoBase's total error), while
+# adults rarely breathe below ~10 br/min yet slow vasomotor/drift power at 6-9
+# br/min kept winning the argmax. Breathing rate tracks heart rate across
+# populations (measured true RR/HR: 5th-95th pct 0.08-0.27 CapnoBase, 0.13-0.26
+# BIDMC), so the band is expressed as FRACTIONS OF THE WINDOW'S OWN HEART RATE,
+# measured from the beats already detected in that window — no dependence on
+# prev_bpm or any other engine state.
+#   lower edge = 0.06 x HR  (clipped to [_RESP_LOW, 0.25 Hz])
+#   upper edge = 0.30 x HR  (clipped to [_RESP_HIGH, 0.80 Hz])
+# Falls back to the fixed _RESP_LOW.._RESP_HIGH band when no HR is available.
+_RR_BAND_LO_HR_FRAC = 0.06
+_RR_BAND_HI_HR_FRAC = 0.30
+_RR_BAND_LO_CAP_HZ  = 0.25
+_RR_BAND_HI_CAP_HZ  = 0.80
+# Low-zone rescue: if the winning peak sits below _RR_LOW_ZONE_BPM, look for a
+# peak anywhere in [1.6x, 2.8x] its frequency and prefer it when it holds at
+# least _RR_LOW_ZONE_RATIO of the winner's power. The existing
+# _promote_subharmonic only inspects the single bin at EXACTLY 2x (+-0.06
+# br/min), so a junk low peak whose true partner sits at 2.2-2.8x was never
+# rescued. 43% of BIDMC's remaining wrong windows were this ~0.5x class.
+# Parameters were chosen on BIDMC+CapnoBase and then confirmed on 40 held-out
+# VitalDB surgeries never used for tuning (session MAE 1.21 -> 1.03); results
+# are flat across zone 11-13 and ratio 0.25-0.35, not a knife-edge optimum.
+_RR_LOW_ZONE_BPM   = 12.0
+_RR_LOW_ZONE_RATIO = 0.30
+_RR_LOW_ZONE_SPAN  = (1.6, 2.8)
+# Subharmonic promotion threshold: promote to 2x the peak when the double
+# holds at least this fraction of the peak's power. Tuned on BIDMC — see
+# AdvancedRPPG._promote_subharmonic and data/evolution for the measured sweep.
+_RR_SUBHARM_PROMOTE_RATIO = 0.55
+# Separate, stricter threshold for the demotion direction (2x -> 1x). A
+# shared threshold with promotion regressed BIDMC (session MAE 1.60 -> 1.87)
+# while helping CapnoBase a lot (3.37 -> 2.39) — measured, not assumed. Being
+# more conservative about demoting (requiring the half to be closer to
+# co-dominant, not just "not negligible") is the knob to recover the BIDMC
+# cost without giving back all of the CapnoBase gain — being swept in
+# data/evolution/19-respiratory-rate-ground-truth.md Finding 8.
+_RR_DEMOTE_RATIO = 0.80
+# Minimum heartbeats per breath before an RIV-derived RR is considered
+# adequately sampled.
+#
+# The RIV series are sampled ONCE PER HEARTBEAT, so the beat rate is the
+# sampling rate for respiration. Recovering a breathing rhythm therefore needs
+# beats >> breaths; at HR 90 with RR 24 there are only 3.75 beats per breath,
+# which is near the point where the interpolated RIV series can no longer
+# represent the respiratory waveform. This is an inherent property of
+# beat-derived RR methods, not a tuning parameter — measured on BIDMC, the
+# estimator's signed error is negative in every band above 14 br/min
+# (-1.2 at 14-18, -1.8 at 18-20, -1.8 at 20-24), i.e. it systematically
+# UNDER-estimates high respiratory rates. Widening _RESP_HIGH does not fix it
+# (swept 0.50/0.60/0.70/0.85 Hz: tachypnea miss rate stayed 40%, synthetic MAE
+# got worse), confirming the limit is sampling, not the search band.
+#
+# Underestimation is the clinically dangerous direction here, because
+# clinical.RR_TACHY is 20 br/min and a suppressed tachypnea also suppresses
+# the Compensated Shock interaction term. So when a reading falls in this
+# undersampled regime, confidence is cut so the existing gates drop it: an
+# explicit "could not measure" lets core.clinical.assess() fall back to
+# heart-rate-only assessment, whereas a confident-looking low number actively
+# hides tachypnea.
+_RR_MIN_BEATS_PER_BREATH = 4.0
 
 # POS sliding window length (seconds) — per Wang 2017
 _POS_WINDOW_SEC = 1.6
@@ -252,19 +408,51 @@ def _select_dominant_freq_hps(valid_freqs: np.ndarray, valid_psd: np.ndarray) ->
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 
-def _safe_butter_sos(low: float, high: float, fs: float, order: int = 4) -> Optional[np.ndarray]:
-    """Build a Butterworth bandpass SOS; returns None on failure."""
+def _safe_butter_sos(low: float, high: float, fs: float, order: int = 4,
+                     clamp_to_pulse_band: bool = True) -> Optional[np.ndarray]:
+    """
+    Build a Butterworth bandpass SOS; returns None on failure.
+
+    clamp_to_pulse_band (default True) applies the PULSE-band guards
+    (_BP_LOW_FLOOR / _BP_HIGH_CEIL / _BP_MIN_WIDTH) that keep the adaptive
+    heart-rate filter from collapsing or wandering out of physiological
+    range. Every heart-rate call site wants that and must keep passing True.
+
+    Pass False for any band OUTSIDE the pulse range — respiration, above all.
+    Those guards are not generic: _BP_LOW_FLOOR is 0.70 Hz (42 bpm), so
+    requesting the respiratory band 0.10-0.50 Hz used to be silently
+    rewritten to 0.70-1.00 Hz — low clamped UP to 0.70, high clamped DOWN to
+    0.50, then the negative width tripped the collapse guard and pushed high
+    to 1.00. The result was a filter passing 42-60 BREATHS/min, centred
+    squarely on the heart-rate fundamental.
+
+    That was not a subtle mis-tuning; it is why the old respiratory-rate
+    estimator scored r = -0.088 against human-annotated breaths on BIDMC. Its
+    "respiration filter" was passing the pulse rather than rejecting it, so
+    the pulse then dominated the top of the 6-30 br/min search band and the
+    argmax pinned to the 30 br/min ceiling. Verified directly with
+    sosfreqz: requested 0.1-0.5 Hz, actual -3 dB passband 0.701-0.999 Hz.
+    """
     try:
-        width = high - low
-        if width < _BP_MIN_WIDTH:
-            # Prevent filter collapse: expand symmetrically
-            mid = (low + high) / 2.0
-            low  = max(_BP_LOW_FLOOR, mid - _BP_MIN_WIDTH / 2.0)
-            high = min(_BP_HIGH_CEIL, mid + _BP_MIN_WIDTH / 2.0)
-        low  = max(_BP_LOW_FLOOR, low)
-        high = min(_BP_HIGH_CEIL, high)
-        if high - low < _BP_MIN_WIDTH:
-            high = low + _BP_MIN_WIDTH
+        if clamp_to_pulse_band:
+            width = high - low
+            if width < _BP_MIN_WIDTH:
+                # Prevent filter collapse: expand symmetrically
+                mid = (low + high) / 2.0
+                low  = max(_BP_LOW_FLOOR, mid - _BP_MIN_WIDTH / 2.0)
+                high = min(_BP_HIGH_CEIL, mid + _BP_MIN_WIDTH / 2.0)
+            low  = max(_BP_LOW_FLOOR, low)
+            high = min(_BP_HIGH_CEIL, high)
+            if high - low < _BP_MIN_WIDTH:
+                high = low + _BP_MIN_WIDTH
+        else:
+            # Only guard against genuinely invalid/unstable requests.
+            nyq = fs / 2.0
+            low  = max(low, 1e-6)
+            high = min(high, nyq * 0.999)
+            if low >= high:
+                log.warning("Filter build skipped: low %.3f >= high %.3f Hz", low, high)
+                return None
         return signal.butter(order, [low, high], btype="bandpass", fs=fs, output="sos")
     except Exception as exc:
         log.warning("Filter build failed (%.2f–%.2f Hz): %s", low, high, exc)
@@ -549,10 +737,20 @@ class AdvancedRPPG:
         self.buffer_size  = window_size
         self.algorithm    = Algorithm(algorithm.upper())
 
-        # RGB ring buffers
-        self.r_buffer: deque[float] = deque(maxlen=window_size)
-        self.g_buffer: deque[float] = deque(maxlen=window_size)
-        self.b_buffer: deque[float] = deque(maxlen=window_size)
+        # RGB ring buffers.
+        #
+        # maxlen is deliberately max(window_size, fps * _RR_WINDOW_SEC): the
+        # HR path always slices its own last `fps * 10` samples inside
+        # _run_pipeline, so holding MORE history than window_size leaves every
+        # heart-rate number bit-identical, while giving respiratory rate the
+        # long window it physically requires (see the _RR_* block above).
+        # Doing it here rather than at each AdvancedRPPG(...) construction
+        # site means callers keep their existing window_size semantics for HR
+        # and no call site has to change. Cost is ~1800 floats x 3.
+        _buf_len = max(window_size, int(fps * _RR_WINDOW_SEC))
+        self.r_buffer: deque[float] = deque(maxlen=_buf_len)
+        self.g_buffer: deque[float] = deque(maxlen=_buf_len)
+        self.b_buffer: deque[float] = deque(maxlen=_buf_len)
 
         # ── Filter state ──────────────────────────────────────────────
         # Seed filter (wide, used until first stable BPM is known)
@@ -562,13 +760,58 @@ class AdvancedRPPG:
         self._adaptive_low  = _BP_SEED_LOW
         self._adaptive_high = _BP_SEED_HIGH
 
-        # Respiration filter (fixed — respiratory rate drift is slow)
-        self._sos_resp = _safe_butter_sos(_RESP_LOW, _RESP_HIGH, fps, order=2)
+        # Respiration filter at the frame rate. No longer used by the RR path
+        # (which filters the RIV series on the _RIV_FS grid via _sos_riv
+        # instead), but kept because it is now CORRECT for the first time —
+        # it used to be built with the pulse-band clamps still applied, which
+        # made it a 0.70-1.00 Hz filter rather than 0.10-0.50 Hz.
+        self._sos_resp = _safe_butter_sos(_RESP_LOW, _RESP_HIGH, fps, order=2,
+                                         clamp_to_pulse_band=False)
+
+        # Pulse-band filter used for beat detection when deriving RIVs. Order 3
+        # (vs the resp filter's 2) because this one has to isolate beats
+        # cleanly across a 60 s window, not merely pass a band.
+        self._sos_pulse = _safe_butter_sos(_BP_LOW_FLOOR, _BP_HIGH_CEIL, fps, order=3)
+
+        # Respiration bandpass applied to the RIV series ON THE _RIV_FS GRID.
+        #
+        # This is NOT redundant with masking the FFT output to the resp band.
+        # Measured: with linear detrending plus band-masking alone, 9 of 11
+        # remaining failure cases on BIDMC were 0.5x SUBHARMONIC lock-ons
+        # landing at 7-9 br/min against a true 16-22. Cause: detrend(type=
+        # "linear") removes only a straight line, but real baseline/perfusion
+        # drift is curved, so a large sub-0.1 Hz residual survives — and
+        # spectral LEAKAGE from that residual floods the lowest in-band bins.
+        # Masking the output cannot undo leakage that has already contaminated
+        # the bins you kept; only filtering before the transform removes it.
+        # Order 4 here (not 2) because this filter's whole job is to reject a
+        # component that is far stronger than the signal being kept.
+        # clamp_to_pulse_band=False is REQUIRED here — see _safe_butter_sos.
+        # With the default True, this request silently becomes a 0.70-1.00 Hz
+        # (42-60 br/min) filter centred on the heart rate.
+        self._sos_riv = _safe_butter_sos(_RESP_LOW, _RESP_HIGH, _RIV_FS,
+                                        order=4, clamp_to_pulse_band=False)
+        # Per-band variants of the same filter for the HR-adaptive search band
+        # (see _RR_BAND_*); edges are quantised to 0.01 Hz so this stays tiny.
+        self._sos_riv_cache: dict = {(_RESP_LOW, _RESP_HIGH): self._sos_riv}
 
         # ── Temporal smoothing ────────────────────────────────────────
         self.prev_bpm: float = 0.0
         self.prev_snr: float = 0.0
         self.prev_rr: float = 0.0
+
+        # RR session history + update throttle.
+        #
+        # rr_history is the direct analogue of bpm_history: until now RR had NO
+        # session history at all, only a 2-sample EMA, so the session-level RR
+        # the product reported was just "whatever the last frame happened to
+        # say". HR by contrast gets an IQR-filtered median over its whole
+        # history in get_final_summary(). Closing that asymmetry is worth as
+        # much as the estimator rewrite: on BIDMC, per-window MAE 2.89 becomes
+        # session-level MAE 1.37 purely by aggregating this way.
+        self.rr_history: list[float] = []
+        self._rr_cycle_counter: int = 0
+        self._rr_cached: tuple = (0.0, 0.0)
 
         # BPM lock/candidate hysteresis state — see _LOCK_* constants above.
         self._locked_bpm: float = 0.0
@@ -806,8 +1049,45 @@ class AdvancedRPPG:
                 self._history_reject_streak = 0
 
         # ── Step 8: respiratory rate ──────────────────────────────────
-        rr_bpm_raw, rr_conf = self._estimate_rr(ppg_raw)
+        # Note it is NOT given ppg_raw (the 10 s HR window) any more — it
+        # reads the engine's own longer history, because respiration at
+        # 12 br/min completes only 2 cycles in 10 s and cannot be resolved
+        # from that. Throttled to _RR_UPDATE_HZ: RR moves slowly, and doing
+        # beat-detection plus three Welch transforms over a 60 s buffer on
+        # every single frame would stall the live MJPEG stream.
+        self._rr_cycle_counter += 1
+        rr_every = max(1, int(self.fps / _RR_UPDATE_HZ))
+        is_fresh_rr = (self._rr_cycle_counter % rr_every == 0
+                       or self._rr_cached == (0.0, 0.0))
+        if is_fresh_rr:
+            self._rr_cached = self._estimate_rr()
+        rr_bpm_raw, rr_conf = self._rr_cached
+
         rr_bpm = self._smooth_rr(rr_bpm_raw, rr_conf) if rr_bpm_raw > 0 else 0.0
+
+        # RR session history — the analogue of the bpm_history gate above.
+        # Only readings that clear the same confidence floor the display and
+        # clinical engine use are allowed to accumulate, so the session median
+        # is built from readings the system is willing to stand behind.
+        #
+        # is_fresh_rr gates the append too, not just the throttle above — this
+        # matters a great deal, not just for efficiency. Without it, a SINGLE
+        # true estimate gets appended once per frame for every frame until the
+        # next recompute (~15 times at 30fps / _RR_UPDATE_HZ=2), so rr_history
+        # was never really "N independent measurements": it was N/15 distinct
+        # values, each repeated ~15x, with the repeat count set by frame
+        # timing rather than measurement quality. A single wrong-but-confident
+        # cold-start estimate that happened to persist for one throttle
+        # interval could dominate the session median purely by having
+        # appeared for longer, not by being more likely correct. Caught via a
+        # synthetic regression: after an unrelated fusion change, one
+        # 90 s run's very first RR estimate (a confidently-wrong 28 br/min
+        # against true 12) got appended ~15 times in that one throttle window,
+        # which was enough to drag the IQR-filtered session median to 27 br/min
+        # even though the great majority of the session's DISTINCT estimates
+        # clustered correctly around 11-12.
+        if is_fresh_rr and rr_bpm_raw > 0 and rr_conf >= _RR_HISTORY_MIN_CONF:
+            self.rr_history.append(float(rr_bpm_raw))
 
         # ── Step 9: stability ─────────────────────────────────────────
         recent = self.bpm_history[-30:] if len(self.bpm_history) > 30 else self.bpm_history
@@ -965,61 +1245,444 @@ class AdvancedRPPG:
 
     # ── Respiratory rate ──────────────────────────────────────────────────────
 
-    def _estimate_rr(self, ppg_raw: np.ndarray) -> tuple[float, float]:
+    def _beat_detection_filter(self) -> Optional[np.ndarray]:
         """
-        Estimate respiratory rate from the RSA-modulated component of the
-        pulse signal.
+        Pulse-band filter used for RIV beat detection — narrowed around the
+        CONFIRMED heart rate when one exists, instead of the full physiological
+        range.
 
-        Fix vs. the original implementation: `signal.welch(..., nperseg=
-        len(resp), noverlap=0)` used the ENTIRE buffer as a single segment —
-        that's not actually Welch's method, it's a plain windowed
-        periodogram (the whole point of Welch averaging is multiple
-        overlapping sub-segments averaged together to reduce spectral
-        variance; a single segment gets none of that benefit no matter how
-        much `nfft` zero-padding is applied on top). Respiration's RSA
-        modulation is much weaker than the pulse signal itself, so a noisy
-        single-segment PSD tends to produce a spurious peak sitting right at
-        one edge of the 6-30 br/min search band rather than a genuine
-        mid-band peak — which is exactly the "bounces between ~6 and ~30"
-        symptom this was producing. Using real overlapping sub-segments
-        (Hann-windowed, 50% overlap) genuinely averages down that variance.
+        Root cause this fixes: the static wide-band `_sos_pulse`
+        (_BP_LOW_FLOOR.._BP_HIGH_CEIL) passes a heart rate's 2nd harmonic
+        completely unattenuated whenever it also falls in-range, which it
+        almost always does (2x a 60 bpm pulse is 120 bpm, itself a plausible
+        "heart rate" to the filter). Any waveform with dicrotic-notch-like
+        asymmetry then has a second, harmonic-driven local maximum per cardiac
+        cycle, and a generic prominence threshold cannot always distinguish it
+        from a genuine beat. Measured: even a HEART-RATE-ONLY synthetic
+        signal (no respiration at all) produced 1.55x too many detected
+        "beats" (91 found over 58.6 s at 60 bpm, vs. 58.6 expected) — every
+        downstream RIV series built from over-counted beats is contaminated,
+        independent of anything to do with respiration.
+        The main HR pipeline already solves the identical problem for its own
+        peak-picking by narrowing around the confirmed rate (see
+        _update_adaptive_filter) — this mirrors that fix for beat DETECTION.
+        A generous +-25% guard is used (vs. the main filter's much tighter
+        SNR-adaptive guard) because RIV extraction only needs harmonics
+        suppressed, not fine frequency resolution, and physiological HR can
+        genuinely drift by more than a tight guard would allow over a 60 s
+        window.
+        Falls back to the static wide-band filter during cold start, before
+        any HR has been confirmed.
         """
-        if self._sos_seed is None or len(ppg_raw) < int(self.fps * 6):
+        if self.prev_bpm <= 0:
+            return self._sos_pulse
+        hz = self.prev_bpm / 60.0
+        low, high = hz * 0.75, hz * 1.25
+        narrowed = _safe_butter_sos(low, high, self.fps, order=3,
+                                    clamp_to_pulse_band=False)
+        return narrowed if narrowed is not None else self._sos_pulse
+
+    def _extract_rivs(self, ppg_long: np.ndarray) -> Optional[tuple]:
+        """
+        Derive the three per-beat respiratory-induced variation series.
+
+        Returns (times_sec, riav, riiv, rifv) sampled once per detected beat,
+        or None when there aren't enough clean beats to define anything.
+        """
+        sos_pulse = self._beat_detection_filter()
+        if sos_pulse is None:
+            return None
+        try:
+            pulse = signal.sosfiltfilt(sos_pulse, ppg_long)
+        except Exception:
+            return None
+
+        sd = float(np.std(pulse))
+        if sd <= 0:
+            return None
+
+        peaks, _ = find_peaks(
+            pulse,
+            distance=int(self.fps * 0.40),          # 400 ms refractory floor
+            prominence=max(1e-6, sd * 0.20),
+        )
+        if len(peaks) < _RR_MIN_BEATS:
+            return None
+
+        t, riav, riiv, rifv = [], [], [], []
+        for i in range(1, len(peaks)):
+            a, b = peaks[i - 1], peaks[i]
+            seg = pulse[a:b + 1]
+            if len(seg) < 2:
+                continue
+            t.append(b / self.fps)
+            riav.append(float(pulse[b]) - float(np.min(seg)))   # amplitude
+            riiv.append(float(ppg_long[b]))                     # baseline level
+            rifv.append((b - a) / self.fps)                     # interval (RSA)
+
+        if len(t) < _RR_MIN_BEATS:
+            return None
+        return (np.asarray(t), np.asarray(riav),
+                np.asarray(riiv), np.asarray(rifv))
+
+    def _riv_candidate(self, grid: np.ndarray, t: np.ndarray,
+                       series: np.ndarray, dedrift: bool = False,
+                       lo: float = _RESP_LOW, hi: float = _RESP_HIGH) -> tuple:
+        """
+        One RIV series → (rr_bpm, spectral_concentration).
+
+        Interpolates onto the uniform grid with a cubic spline rather than
+        linear interpolation. Linear interpolation between beat-spaced
+        samples (~0.7 s apart) acts as a mild low-pass filter — its transfer
+        function attenuates higher frequencies more than lower ones — which
+        was measured to be part of why the estimator's answers compressed
+        toward the middle of the search band rather than tracking the true
+        rate (regression slope of estimate-on-truth only 0.34, i.e. moving
+        about a third as much as reality). Switching to cubic interpolation
+        alone moved that slope to ~0.55 with no other change. Falls back to
+        linear if the beat count is too low for a cubic spline (needs >=4
+        points).
+
+        `dedrift` (RIIV only — see _RIIV_DEDRIFT_WINDOW_SEC) subtracts a
+        rolling median baseline BEFORE the existing linear detrend/bandpass,
+        to reject non-linear drift (e.g. a webcam's own AGC/auto-exposure
+        stepping) that a single global linear detrend cannot remove and that
+        the bandpass filter's soft rolloff does not fully reject at its
+        edge. RIAV and RIFV don't carry this confound (they're a beat-local
+        shape/interval feature, not an absolute baseline level) and are left
+        untouched.
+        """
+        if len(t) >= 4:
+            try:
+                y = CubicSpline(t, series)(grid)
+            except Exception:
+                y = np.interp(grid, t, series)
+        else:
+            y = np.interp(grid, t, series)
+
+        if dedrift:
+            win = int(_RIIV_DEDRIFT_WINDOW_SEC * _RIV_FS)
+            win += 1 - (win % 2)   # median_filter wants an odd window size
+            if win >= 3 and len(y) > win:
+                try:
+                    baseline = median_filter(y, size=win, mode="nearest")
+                    y = y - baseline
+                except Exception:
+                    pass
+
+        try:
+            y = signal.detrend(y, type="linear")   # removes the linear component
+        except Exception:
+            y = y - float(np.mean(y))
+
+        # Then reject what detrending cannot: the CURVED sub-band drift whose
+        # leakage was causing subharmonic lock-on (see self._sos_riv).
+        sos = self._riv_sos(lo, hi)
+        if sos is not None and len(y) > 24:
+            try:
+                y = signal.sosfiltfilt(sos, y)
+            except Exception:
+                pass
+
+        nperseg = len(y)                            # full span = best resolution
+        if nperseg < 8:
             return 0.0, 0.0
         try:
-            resp = signal.sosfiltfilt(self._sos_resp, ppg_raw)
-
-            # Real multi-segment Welch averaging: sub-windows of ~8s (or the
-            # full buffer if shorter), 50% overlap — several respiration
-            # cycles per segment while still averaging 2+ segments together.
-            nperseg = min(len(resp), int(self.fps * 8))
-            nperseg = max(nperseg, int(self.fps * 4))  # floor: >=1 full breath cycle at 6bpm/6s hard to hit lower
-            nperseg = min(nperseg, len(resp))
-            noverlap = nperseg // 2
-
-            rfreqs, rpsd = signal.welch(
-                resp, fs=self.fps,
-                window="hann", nperseg=nperseg, noverlap=noverlap, nfft=4096,
+            f, p = signal.welch(
+                y, fs=_RIV_FS, window="hann",
+                nperseg=nperseg, noverlap=nperseg // 2, nfft=4096,
             )
-            rmask   = (rfreqs >= _RESP_LOW) & (rfreqs <= _RESP_HIGH)
-            rfreqs  = rfreqs[rmask]
-            rpsd    = rpsd[rmask]
-            if len(rpsd) == 0:
+        except Exception:
+            return 0.0, 0.0
+
+        m = (f >= lo) & (f <= hi)
+        f, p = f[m], p[m]
+        if len(p) == 0 or not np.any(p > 0):
+            return 0.0, 0.0
+
+        k = self._select_rr_peak(f, p, lo, hi)
+        rr = float(f[k] * 60.0)
+        conc = float(np.sum(p[max(0, k - 2):k + 3]) / (float(np.sum(p)) + 1e-12) * 100.0)
+        return rr, conc
+
+    def _riv_sos(self, lo: float, hi: float):
+        """RIV-grid bandpass for [lo, hi] Hz, built once per quantised band."""
+        key = (lo, hi)
+        sos = self._sos_riv_cache.get(key)
+        if sos is None:
+            sos = _safe_butter_sos(lo, hi, _RIV_FS, order=4, clamp_to_pulse_band=False)
+            self._sos_riv_cache[key] = sos
+        return sos
+
+    @staticmethod
+    def _rr_band(beat_hz: float) -> tuple:
+        """HR-adaptive RR search band (Hz) — see _RR_BAND_* for the evidence.
+        Edges quantised to 0.01 Hz so the per-band filter cache stays small."""
+        if beat_hz <= 0:
+            return _RESP_LOW, _RESP_HIGH
+        lo = min(max(_RR_BAND_LO_HR_FRAC * beat_hz, _RESP_LOW), _RR_BAND_LO_CAP_HZ)
+        hi = min(max(_RR_BAND_HI_HR_FRAC * beat_hz, _RESP_HIGH), _RR_BAND_HI_CAP_HZ)
+        return round(lo * 100.0) / 100.0, round(hi * 100.0) / 100.0
+
+    @classmethod
+    def _select_rr_peak(cls, f: np.ndarray, p: np.ndarray, lo: float, hi: float) -> int:
+        """Pick the respiratory peak index: argmax, then low-zone rescue, then
+        the exact-2x promote / exact-1/2x demote checks."""
+        k = int(np.argmax(p))
+        if f[k] * 60.0 < _RR_LOW_ZONE_BPM:
+            m = (f >= _RR_LOW_ZONE_SPAN[0] * f[k]) & (f <= _RR_LOW_ZONE_SPAN[1] * f[k])
+            if m.any():
+                idx = np.where(m)[0]
+                k2 = int(idx[int(np.argmax(p[idx]))])
+                if p[k2] >= _RR_LOW_ZONE_RATIO * p[k]:
+                    k = k2
+        k = cls._promote_subharmonic(f, p, k, hi)
+        k = cls._demote_harmonic(f, p, k, lo)
+        return k
+
+    @staticmethod
+    def _sampling_derate(rr: float, conf: float, beat_hz: float) -> tuple:
+        """
+        Cut confidence when there are too few heartbeats per breath for the
+        RIV series to represent respiration (see _RR_MIN_BEATS_PER_BREATH).
+
+        Returns (rr, adjusted_conf) — the rate itself is NOT altered. The
+        point is to stop presenting an under-sampled estimate as reliable,
+        not to invent a corrected value: this system has no validated way to
+        recover a rate its sampling cannot resolve, and a fudge factor fitted
+        to 53 ICU recordings would not be one.
+        """
+        if rr <= 0 or beat_hz <= 0:
+            return rr, conf
+        beats_per_breath = beat_hz / (rr / 60.0)
+        if beats_per_breath >= _RR_MIN_BEATS_PER_BREATH:
+            return rr, conf
+        # Linear taper to zero as sampling degrades, so the existing
+        # confidence gates take over and report "not measured".
+        factor = max(0.0, beats_per_breath / _RR_MIN_BEATS_PER_BREATH)
+        return rr, float(conf * factor)
+
+    @staticmethod
+    def _promote_subharmonic(f: np.ndarray, p: np.ndarray, k: int,
+                             hi: float = _RESP_HIGH) -> int:
+        """
+        If the peak's DOUBLE carries comparable-or-greater power, prefer the
+        double.
+
+        Deliberately the same asymmetric shape as _select_dominant_freq_hps
+        uses for heart rate, and for the same reason documented there: when a
+        tracker is stuck at half the true rate, the true signal's own energy
+        sits exactly at the candidate's "2nd harmonic" position, so a
+        symmetric or naive-HPS test scores that energy as support FOR the
+        wrong answer. Only an explicit "is my double at least as strong as
+        me?" check can escape, and it must be one-directional or it will
+        happily walk a correct answer up to 2x instead.
+
+        Measured on BIDMC before this check existed: 9 of 11 residual failures
+        were 0.5x subharmonic locks (e.g. bidmc_22 gold 19 -> est 7.6,
+        bidmc_30 gold 19 -> est 7.3).
+        """
+        if k >= len(f):
+            return k
+        f_double = 2.0 * float(f[k])
+        if f_double > hi:
+            return k                      # double is out of band — nothing to prefer
+        k2 = int(np.argmin(np.abs(f - f_double)))
+        if k2 == k:
+            return k
+        # Compare small neighbourhoods, not single bins: with nfft=4096 the
+        # bin spacing is far finer than the true resolution, so a lone bin is
+        # noise-sensitive in a way a 3-bin sum is not.
+        pk = float(np.sum(p[max(0, k - 1):k + 2]))
+        p2 = float(np.sum(p[max(0, k2 - 1):k2 + 2]))
+        if pk <= 0:
+            return k
+        if p2 >= pk * _RR_SUBHARM_PROMOTE_RATIO:
+            return k2
+        return k
+
+    @staticmethod
+    def _demote_harmonic(f: np.ndarray, p: np.ndarray, k: int,
+                         lo: float = _RESP_LOW) -> int:
+        """
+        Mirror of _promote_subharmonic: if the peak's HALF carries
+        comparable-or-greater power, prefer the half.
+
+        Root cause this addresses, found on CapnoBase (record 0105, true RR
+        ~10 br/min): sustained 2x-harmonic lock, with HIGH fused confidence
+        precisely on the wrong windows (RIAV+RIIV agreeing on the same wrong
+        harmonic looks like strong agreement) and LOW confidence on the rare
+        correct windows. Traced to real 2nd-harmonic energy in the RIV
+        spectrum exceeding the fundamental's — breathing waveforms are not
+        pure sinusoids (asymmetric inhale/exhale), so genuine harmonic
+        content is physiologically expected, not a leakage artefact.
+
+        _promote_subharmonic's own docstring already predicted this needs a
+        mirror check ("must be one-directional or it will happily walk a
+        correct answer up to 2x") — this is that mirror, checking the
+        opposite direction. Applied strictly after promotion so the two
+        cannot fight over the same bin in the same call.
+        """
+        if k >= len(f) or f[k] <= 0:
+            return k
+        f_half = float(f[k]) / 2.0
+        if f_half < lo:
+            return k                      # half is out of band — nothing to prefer
+        k_half = int(np.argmin(np.abs(f - f_half)))
+        if k_half == k:
+            return k
+        pk = float(np.sum(p[max(0, k - 1):k + 2]))
+        ph = float(np.sum(p[max(0, k_half - 1):k_half + 2]))
+        if pk <= 0:
+            return k
+        if ph >= pk * _RR_DEMOTE_RATIO:
+            return k_half
+        return k
+
+    def _estimate_rr(self, ppg_long: Optional[np.ndarray] = None) -> tuple[float, float]:
+        """
+        Estimate respiratory rate by fusing respiratory-induced variations
+        measured per heartbeat (RIAV amplitude + RIIV baseline; RIFV/RSA is
+        extracted but excluded from fusion — see the _RR_* constant block for
+        why).
+
+        See the _RR_* constant block at the top of this module for the full
+        root-cause writeup: the previous implementation band-passed the RAW
+        ppg at 0.1-0.5 Hz and took an argmax, which measured 1/f drift at one
+        end and leaked pulse energy at the other, and had no measurable
+        correlation with human-annotated breaths on BIDMC. This method
+        replaces it outright rather than tuning it.
+
+        Two further refinements on top of the original 3-channel version,
+        both measured on the full 53-record BIDMC set: dropping RIFV from the
+        fusion, and switching RIV interpolation from linear to cubic spline
+        (see _riv_candidate). Together they moved session MAE 2.10 -> 1.71
+        br/min and the estimate-vs-truth regression slope 0.339 -> 0.541
+        (1.0 = unbiased) — a real improvement, though the estimator still
+        underestimates on average and this is not yet a solved problem.
+
+        `ppg_long` may be injected for testing; in normal operation it is
+        projected from the engine's own long RGB history.
+
+        Returns (rr_breaths_per_min, confidence_0_100). Confidence here means
+        "how well do the three independent channels agree", which is a real
+        reliability signal, unlike a single spectrum's peak height.
+        """
+        if ppg_long is None:
+            need = int(self.fps * _RR_MIN_WINDOW_SEC)
+            if len(self.r_buffer) < need:
                 return 0.0, 0.0
-            r_peak  = int(np.argmax(rpsd))
-            rr_bpm  = float(rfreqs[r_peak] * 60.0)
-            r_sp    = float(np.sum(rpsd[max(0, r_peak - 1):r_peak + 2]))
-            r_total = float(np.sum(rpsd)) + 1e-9
-            rr_conf = float(np.clip((r_sp / r_total) * 100.0, 0.0, 100.0))
+            take = int(self.fps * _RR_WINDOW_SEC)
+            r = np.array(list(self.r_buffer)[-take:])
+            g = np.array(list(self.g_buffer)[-take:])
+            b = np.array(list(self.b_buffer)[-take:])
+            if self.algorithm == Algorithm.CHROM:
+                ppg_long = _project_chrom(r, g, b)
+            else:
+                ppg_long = _project_pos(r, g, b, self.fps)
 
-            # A peak sitting exactly at the search-band edge is the known
-            # failure signature (no genuine mid-band peak found) — penalise
-            # its confidence rather than reporting it at face value.
-            edge_bins = max(1, len(rpsd) // 20)  # innermost ~5% at each edge
-            if r_peak < edge_bins or r_peak >= len(rpsd) - edge_bins:
-                rr_conf *= 0.4
+        if len(ppg_long) < int(self.fps * _RR_MIN_WINDOW_SEC):
+            return 0.0, 0.0
 
-            return rr_bpm, rr_conf
+        try:
+            got = self._extract_rivs(ppg_long)
+            if got is None:
+                return 0.0, 0.0
+            t, riav, riiv, rifv = got   # rifv (RSA) is extracted but NOT fused — see below
+
+            # Uniform low-rate grid. This is the step that structurally
+            # removes the pulse: Nyquist is _RIV_FS/2, far below any heart
+            # rate, so pulse energy cannot alias back into the resp band.
+            grid = np.arange(t[0], t[-1], 1.0 / _RIV_FS)
+            if len(grid) < 16:
+                return 0.0, 0.0
+
+            # Fuse RIAV (amplitude) and RIIV (baseline) only. RIFV — the
+            # respiratory sinus arrhythmia channel — was in the original
+            # 3-channel fusion but measured as near-noise on BIDMC: alone it
+            # scored slope 0.09-0.14 and corr ~0.08 against ground truth
+            # (vs. RIIV alone's 0.55 / 0.48), and including it in the median
+            # dragged the fused answer toward its bad guesses rather than
+            # improving robustness. Likely because BIDMC's ICU population
+            # (many ventilated) has blunted RSA — exactly what RIFV depends
+            # on. Dropping it, together with cubic interpolation above,
+            # measured session MAE 2.10 -> 1.71 br/min and moved the
+            # estimate-vs-truth regression slope from 0.339 toward 1.0 up to
+            # 0.541 — still not unbiased, but a real, verified improvement.
+            # Beat rate == the RIV series' sampling rate. Needed to size the
+            # HR-adaptive search band below AND to judge whether the answer is
+            # adequately sampled at all (_sampling_derate).
+            span_s = float(t[-1] - t[0])
+            beat_hz = (len(t) / span_s) if span_s > 0 else 0.0
+            band_lo, band_hi = self._rr_band(beat_hz)
+
+            cands, concs = [], []
+            for series, needs_dedrift in ((riav, False), (riiv, True)):
+                rr, conc = self._riv_candidate(grid, t, series, dedrift=needs_dedrift,
+                                               lo=band_lo, hi=band_hi)
+                if rr > 0:
+                    cands.append(rr)
+                    concs.append(conc)
+            if not cands:
+                return 0.0, 0.0
+
+            cands = np.asarray(cands)
+            concs = np.asarray(concs)
+
+            # TEMP DIAGNOSTIC (remove after this verification test — see
+            # Finding 10 in data/evolution/19-respiratory-rate-ground-truth.md)
+            log.info("RR candidates (TEMP DIAG): %s (conc=%s) band=%.2f-%.2fHz",
+                     cands.tolist(), concs.tolist(), band_lo, band_hi)
+
+            if len(cands) == 1:
+                # Single surviving channel — no cross-check possible, so this
+                # can never present as high confidence.
+                return self._sampling_derate(
+                    float(cands[0]), float(np.clip(concs[0] * 0.5, 0.0, 40.0)), beat_hz)
+
+            spread = float(np.std(cands))
+            if spread <= _RR_AGREE_TOL:
+                # Median, not mean: measured better than mean on BIDMC
+                # (within-2-br/min rate 52.8% -> 62.6%) because one channel
+                # landing on a harmonic shouldn't drag the fused answer.
+                rr = float(np.median(cands))
+                return self._sampling_derate(
+                    rr, float(np.clip(100.0 - spread * 12.0, 20.0, 100.0)), beat_hz)
+
+            # Channels disagree overall — fall back to the tightest agreeing
+            # pair, at reduced confidence. With exactly 2 fused channels
+            # (RIAV, RIIV — see above for why RIFV was dropped) this branch
+            # only matters if a third channel is reinstated in the future;
+            # today "the tightest pair" is the only pair, already excluded by
+            # the spread check above, so it never fires. Left in place rather
+            # than special-cased so the fusion logic stays correct if the
+            # channel set changes again.
+            order = np.argsort(cands)
+            cs = cands[order]
+            gaps = np.diff(cs)
+            j = int(np.argmin(gaps))
+            if gaps[j] <= _RR_AGREE_TOL:
+                return self._sampling_derate(
+                    float(np.mean(cs[j:j + 2])),
+                    float(np.clip(60.0 - gaps[j] * 8.0, 15.0, 60.0)), beat_hz)
+
+            # The fused channels disagree outright (with 2 channels: RIAV and
+            # RIIV gave different answers and neither dominates). Report the
+            # best-concentrated candidate but with confidence low enough that
+            # the display/clinical gates (RR_CONFIDENCE_LOW) will drop it —
+            # an honest "couldn't measure" beats a confident wrong number
+            # feeding the Compensated Shock rule.
+            #
+            # (Spectral concentration is a weak tie-breaker: measured on
+            # synthetic signal it sometimes picks the worst channel, e.g.
+            # choosing 11.19 over a correct 15.12 br/min. It survives only
+            # because the confidence assigned here is always below
+            # _RR_HISTORY_MIN_CONF, so such readings never enter rr_history
+            # or reach the clinical engine.)
+            k = int(np.argmax(concs))
+            return self._sampling_derate(
+                float(cands[k]), float(np.clip(concs[k] * 0.3, 0.0, 25.0)), beat_hz)
+
         except Exception as exc:
             log.debug("RR estimation failed: %s", exc)
             return 0.0, 0.0
@@ -1122,6 +1785,11 @@ class AdvancedRPPG:
         """
         Return session-end summary statistics.
         Returns final_bpm=None when data is insufficient — no fake values.
+
+        Respiratory rate is aggregated the same way heart rate is (see
+        _summarise_rr): RR used to have no session aggregation at all, so the
+        session RR was effectively the last frame's EMA output. On BIDMC,
+        aggregating instead of last-value took RR from 2.89 to 1.37 br/min MAE.
         """
         if not self.bpm_history:
             if self.prev_bpm > 40:
@@ -1134,6 +1802,7 @@ class AdvancedRPPG:
                     "remark":           self._classify_remark(fb) + " — Low Confidence",
                     "total_readings":   0,
                     "algorithm":        self.algorithm.value,
+                    **self._summarise_rr(),
                 }
             log.info("Final summary: insufficient data.")
             return {
@@ -1144,6 +1813,7 @@ class AdvancedRPPG:
                 "error":            "Minimum 5 seconds of clean face signal required.",
                 "total_readings":   0,
                 "algorithm":        self.algorithm.value,
+                **self._summarise_rr(),
             }
 
         median_bpm  = statistics.median(self.bpm_history)
@@ -1176,6 +1846,58 @@ class AdvancedRPPG:
             "remark":            remark,
             "total_readings":    len(self.bpm_history),
             "algorithm":         self.algorithm.value,
+            **self._summarise_rr(),
+        }
+
+    def _summarise_rr(self) -> dict:
+        """
+        Session-level respiratory rate: IQR-filtered median of rr_history.
+
+        Deliberately mirrors how final_bpm is derived above, because RR needs
+        the same treatment for the same reason — individual per-window
+        estimates are noisy, and a median over many of them is dramatically
+        better than any single one. Measured on BIDMC: per-window MAE 2.89
+        br/min vs. session-level MAE 1.37 (median 0.37), 85% of recordings
+        within 2 br/min.
+
+        Returns final_rr=None (never 0, never a guess) when too few
+        confident readings exist, so callers can distinguish "not measured"
+        from "measured as low" — core.clinical.assess() already handles a
+        missing RR correctly and will simply assess on HR alone.
+        """
+        # 3 is the floor at which a median means anything at all; below that a
+        # single bad reading would BE the answer.
+        if len(self.rr_history) < 3:
+            log.info("Final summary: RR not measurable (%d confident readings)",
+                     len(self.rr_history))
+            return {
+                "final_rr":        None,
+                "rr_readings":     len(self.rr_history),
+                "rr_stability_percent": 0,
+            }
+
+        sorted_rr = sorted(self.rr_history)
+        n  = len(sorted_rr)
+        q1 = sorted_rr[n // 4]
+        q3 = sorted_rr[(3 * n) // 4]
+        iqr = q3 - q1
+        lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        filtered = [x for x in sorted_rr if lo <= x <= hi] or sorted_rr
+
+        final_rr = round(float(statistics.median(filtered)), 1)
+        rr_std   = statistics.stdev(filtered) if len(filtered) > 1 else 0.0
+        # RR spans a ~6-30 br/min range vs HR's ~40-180, so a given std is
+        # proportionally more significant here — hence the steeper factor
+        # than final_bpm's 4.0.
+        rr_stability = round(max(0.0, min(100.0, 100.0 - rr_std * 10.0)))
+
+        log.info("Final summary: RR median=%.1f br/min  readings=%d  stability=%d%%",
+                 final_rr, len(self.rr_history), rr_stability)
+
+        return {
+            "final_rr":             final_rr,
+            "rr_readings":          len(self.rr_history),
+            "rr_stability_percent": rr_stability,
         }
 
     @staticmethod

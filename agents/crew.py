@@ -12,42 +12,57 @@ nvidia_key = os.getenv("NVIDIA_API_KEY")
 groq_key = os.getenv("GROQ_API_KEY")
 
 if nvidia_key:
-    # Configure NVIDIA NIM LLMs with automatic fallbacks for maximum resilience
     from crewai import LLM
-    
-    primary_llm = LLM(
-        model="meta/llama-3.1-8b-instruct",
-        provider="openai",
-        base_url="https://integrate.api.nvidia.com/v1",
-        api_key=nvidia_key
-    )
-    fallback_llms = [
-        LLM(model="meta/llama-3.3-70b-instruct", provider="openai", base_url="https://integrate.api.nvidia.com/v1", api_key=nvidia_key),
-        LLM(model="meta/llama-3.1-70b-instruct", provider="openai", base_url="https://integrate.api.nvidia.com/v1", api_key=nvidia_key),
-        LLM(model="qwen/qwen3.5-122b-a10b", provider="openai", base_url="https://integrate.api.nvidia.com/v1", api_key=nvidia_key),
-        LLM(model="abacusai/dracarys-llama-3.1-70b-instruct", provider="openai", base_url="https://integrate.api.nvidia.com/v1", api_key=nvidia_key),
-    ]
-    
-    primary_llm.fallback_llms = fallback_llms
-    original_call = primary_llm.call
+    from agents import llm_pool
+
+    # NVIDIA's hosted models come and go per API key (see agents/llm_pool.py for the
+    # measured history: 410 retirements, per-account 404s, sudden 40 s timeouts —
+    # all within hours). So no model is hardcoded as "the" model. The pool probes
+    # the candidates in the background, ranks the live ones (quality tier, then
+    # latency), and this file just walks that ranking on every call.
+    #
+    # max_tokens=2000: reasoning-style models spend part of their budget on hidden
+    # chain-of-thought before the visible answer; at 500 the 3-agent crew task was
+    # cut off mid-reasoning and that unfinished reasoning leaked out as the "raw
+    # decision trace". timeout/max_retries=0: a stalled model must fail over to the
+    # next one promptly instead of silently retrying for ~45 s.
+    llm_pool.start_background_probe()
+
+    _worker_cache = {}
+
+    def _worker(model):
+        if model not in _worker_cache:
+            _worker_cache[model] = LLM(
+                model=model, provider="openai",
+                base_url=llm_pool.NIM_BASE, api_key=nvidia_key,
+                max_tokens=2000, timeout=30, max_retries=0,
+            )
+        return _worker_cache[model]
+
+    _DEAD_MARKERS = ("404", "410", "not found", "gone", "end of life", "timed out",
+                     "timeout", "502", "503", "500", "connection")
+
+    # The object CrewAI holds. Only its .call is replaced; the real calls go through
+    # separate worker objects, so there is no recursion when a model is also first in line.
+    llm = LLM(model=llm_pool.CANDIDATES[0][0], provider="openai",
+              base_url=llm_pool.NIM_BASE, api_key=nvidia_key, max_tokens=2000)
 
     def fallback_call(*args, **kwargs):
-        try:
-            return original_call(*args, **kwargs)
-        except Exception as e:
-            print(f"[FALLBACK] Primary NVIDIA model failed: {e}. Trying fallback models...")
-            
-        for fallback_llm in primary_llm.fallback_llms:
+        llm_pool.wait_ready(30)   # first call after startup: use the real ranking
+        for model in llm_pool.ranked():
             try:
-                return fallback_llm.call(*args, **kwargs)
-            except Exception as fe:
-                print(f"[FALLBACK] Fallback model {fallback_llm.model} failed: {fe}. Trying next fallback...")
-                
+                return _worker(model).call(*args, **kwargs)
+            except Exception as e:
+                msg = str(e)
+                dead = llm_pool.is_dead_error(e)
+                if dead:
+                    llm_pool.mark_dead(model)
+                print(f"[FALLBACK] {model} failed ({type(e).__name__}: {msg[:110]})"
+                      f"{' — skipped for ' + str(llm_pool.DEAD_TTL_S) + 's' if dead else ''}; trying next.")
         raise RuntimeError("All models in the NVIDIA NIM fallback chain failed.")
 
-    primary_llm.call = fallback_call
-    llm = primary_llm
-    print("[CREW] Initialised NVIDIA NIM CrewAI Native LLMs (meta/llama-3.1-8b-instruct) with robust fallbacks.")
+    llm.call = fallback_call
+    print("[CREW] Initialised self-healing NVIDIA NIM model pool (see agents/llm_pool.py).")
 elif groq_key:
     # Fallback to Groq LLM
     from langchain_groq import ChatGroq

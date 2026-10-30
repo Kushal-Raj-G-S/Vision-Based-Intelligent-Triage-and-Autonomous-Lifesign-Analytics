@@ -164,7 +164,7 @@ HRV (RMSSD) and the Baevsky Stress Index are folded in as secondary, lower-weigh
    $$X = 3R_n - 2G_n, \quad Y = 1.5R_n + G_n - 1.5B_n$$
 3. **Adaptive Scaling (CHROM)**: 
    $$Pulse(t) = X - \left(\frac{\sigma(X)}{\sigma(Y)}\right) \cdot Y$$
-4. **Respiration RSA Filtering**: Extracts breathing rate via low-frequency bandpass (0.10 Hz – 0.50 Hz / 6–30 Breaths/min) and Welch periodogram spectral estimation.
+4. **Respiration via RIV Fusion**: Extracts breathing rate from *respiratory-induced variations* measured per heartbeat — amplitude (RIAV) and baseline intensity (RIIV) — each resampled onto a uniform 4 Hz grid via cubic spline, detrended, bandpass-filtered (0.10–0.50 Hz / 6–30 breaths/min), spectrally estimated, and fused by median. Resampling to 4 Hz places Nyquist at 2 Hz, which removes the pulse by construction so it cannot contaminate the respiratory band. Beat detection for the underlying RIV series uses a filter narrowed around the currently-confirmed heart rate (not a static wide band), which prevents a heart rate's own 2nd harmonic from being double-counted as extra beats. A third RIV (beat-interval/RSA, RIFV) is extracted but deliberately excluded from fusion — measured to be near-noise on the validation dataset (see Validation section). Following Pimentel et al. (2016) and Karlen et al. (2013). This replaced a direct bandpass of the raw waveform, which validation showed had **no correlation with real respiration**.
 5. **Cubic Spline Upsampling**: Upsamples the PPG signal to 250 Hz (4 ms quantization) for high-accuracy peak timing used to calculate RMSSD HRV.
 
 **POS algorithm — present but not currently wired into the live product.** `core/rppg.py` also implements POS (Wang et al., 2017) as a hot-swappable alternative projection, but every instantiation site in this codebase (`web/__init__.py`, `web/routes.py`, `scripts/analyze_video.py`) constructs `AdvancedRPPG` with the default `algorithm="CHROM"` — there is no API route or UI control that switches it. Validating it (see below) surfaced a real accuracy issue, which is why it stays opt-in rather than default.
@@ -250,7 +250,7 @@ VITAL persists patient records to the `triage_records` table:
 
 # ✅ Validation
 
-Two independent validation modes — see `scripts/validate_dataset.py` for the full harness. Do not conflate them: one validates the DSP math, the other validates end-to-end real-world accuracy.
+Several independent validation modes — see `scripts/validate_dataset.py` and `scripts/validate_rr_bidmc.py`. Do not conflate them: some validate the DSP math, others validate end-to-end real-world accuracy. **Heart rate and respiratory rate are validated separately, on different datasets, to different standards** — the sections below keep them apart deliberately.
 
 ### 1. Synthetic signal validation (runs today, no external data needed)
 A known-BPM RGB trace (physiologically-modelled: green channel carries the strongest AC component, plus realistic sensor noise and a slow illumination drift) is fed directly into `AdvancedRPPG`, bypassing camera capture and face detection. This isolates the DSP pipeline itself.
@@ -265,6 +265,35 @@ Measured results (7 known-BPM trials, 50-140 bpm, 2% sensor noise):
 | :--- | :--- | :--- | :--- |
 | **CHROM** (shipped default) | **0.29 BPM** | 0.53 BPM | Accurate across the full tested range under noise. |
 | **POS** (present, not wired into the app) | 16.00 BPM | 28.88 BPM | Traced (unlike the original 26.71 number, which was measured but never root-caused): POS's cold-start estimate overshoots to roughly double the true rate — the mirror image of CHROM's undershoot bug — and the adaptive filter then reinforces it. A mirrored "demote to the half if it has comparable power" check (`core/rppg.py::_select_dominant_freq_hps`) fixed this specific pattern (one synthetic case went from 74.0 to 1.0 BPM error) without touching CHROM's numbers, but two of the seven synthetic cases still fail for a *different*, not-yet-root-caused reason, and real-video testing (first time ever run) still shows harmonic errors in both directions on some subjects. Full story: [`data/evolution/14-pos-subharmonic-demotion.md`](data/evolution/14-pos-subharmonic-demotion.md). Still flagged **experimental**, still not wired into the app. |
+
+### 1b. Respiratory rate validation — 53 recordings, human-annotated breaths (BIDMC)
+
+Respiratory rate is validated on a **different dataset from heart rate**, because none of the video datasets used for HR ship a respiration reference. The **BIDMC PPG and Respiration Dataset** (PhysioNet, Open Data Commons Attribution v1.0) provides 53 × 8-minute recordings with breath annotations from **two independent human annotators**.
+
+```bash
+python scripts/validate_rr_bidmc.py --baseline --stride 3.0
+```
+
+The photoplethysmogram is resampled 125 Hz → 30 fps first, so the test exercises the frame-rate regime the product actually runs at. A window is scored only when both annotators saw ≥3 breaths **and** agreed within 2 breaths/min.
+
+| | Original implementation | Current (RIV fusion, 2-channel) |
+| :--- | :--- | :--- |
+| Per-window MAE | 11.88 br/min | **2.21 br/min** |
+| **Session-level MAE** | 4.56 (from the 1 recording that produced a number) | **1.60 br/min** |
+| Session median error | — | **0.37 br/min** |
+| Sessions within 2 br/min | 0% | **81.1%** |
+| Correlation with annotated breaths | **+0.048 (none)** | **+0.389** |
+| Readings suppressed by the confidence gate | **99.7%** | 35.8% |
+
+The original implementation **had no correlation with real respiration at all**. Root cause: a shared filter helper applied heart-rate band guards to every caller, silently rewriting the requested 0.10–0.50 Hz respiration band into **0.70–1.00 Hz (42–60 breaths/min)** — a filter centred on the heart-rate fundamental, *passing* the pulse rather than rejecting it. Verified directly with `sosfreqz`.
+
+The first RIV-fusion rewrite (3-channel, linear interpolation) reached session MAE 2.14 — already a large jump from non-functional. Two further, independently-verified bugs pushed it to the current 1.60: **(1)** `rr_history` was silently appending each true estimate ~15 times due to a throttle/append mismatch, letting a single wrong-but-confident reading dominate the session median purely by being duplicated more; **(2)** RIV beat detection used a static wide pulse filter that let a heart rate's 2nd harmonic through unattenuated, over-counting beats by ~55% on a synthetic case with a *known, confirmed* heart rate and *no respiration at all* — proving it wasn't respiration-specific. Also: RIFV (the RSA/beat-interval channel) was dropped from fusion after measuring it as near-noise (slope 0.09–0.14 alone, likely blunted RSA in this ICU/ventilated population), and linear interpolation between beat-spaced samples was replaced with cubic spline, which measurably reduced systematic shrinkage toward the mean (regression slope of estimate-on-truth: 0.339 → 0.541; 1.0 = unbiased). Full story with every measurement: [`data/evolution/19-respiratory-rate-ground-truth.md`](data/evolution/19-respiratory-rate-ground-truth.md).
+
+**Scope limits, stated plainly:**
+- BIDMC is **contact pulse oximetry, not webcam video**. This validates the RR extraction DSP on a clean signal. It does **not** validate the camera/ROI/face-detection layer, and does **not** establish that the same accuracy holds for a webcam-derived waveform, which is far noisier. There is still **no end-to-end webcam RR accuracy number** — obtaining one requires COHFACE or a respiration-belt pilot recording.
+- **The estimator still systematically shrinks toward the population mode** (~17–18 br/min) rather than tracking the true rate — improved but not solved. This biases toward under-reading high RR, the clinically unsafe direction, since the tachypnea threshold is 20 br/min and a suppressed tachypnea also suppresses the Compensated Shock interaction term. The dominant remaining cause is unresolved — gate selection, search-band width, and Welch sub-windowing were all tested as explanations and refuted.
+- A handful of individual recordings (`bidmc_32`, `bidmc_33`, `bidmc_36`, `bidmc_43`) remain large outliers (6–16 br/min session error) even after all fixes.
+- Synthetic RR MAE (~6.7–6.9 br/min) is **worse** than the real-data figure — unresolved, and reported rather than hidden.
 
 ### 2. Real video validation — 56 real sessions across three independent datasets
 This repository does not ship with dataset video data — each requires either a public-link download or a manual access request (see below). `scripts/build_manifest.py` turns a downloaded folder tree into a manifest automatically, handling three different ground-truth formats (UBFC-rPPG's `gtdump.xmp`/`ground_truth.txt`, and UBFC-Phys's raw BVP waveform, peak-detected into a BPM via `bpm_from_waveform()`):

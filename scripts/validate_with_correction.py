@@ -59,11 +59,11 @@ def _subject_id_for_video(video_path):
 
 
 def _load_fold_models(fold_dir):
-    import joblib
+    from core.ml_compat import load_joblib_compat
     fold_models = []
     for fname in sorted(os.listdir(fold_dir)):
         if fname.endswith(".joblib"):
-            bundle = joblib.load(os.path.join(fold_dir, fname))
+            bundle = load_joblib_compat(os.path.join(fold_dir, fname))
             fold_models.append(bundle)
     return fold_models
 

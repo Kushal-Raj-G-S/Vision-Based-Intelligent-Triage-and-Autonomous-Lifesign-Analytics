@@ -108,6 +108,116 @@ def _synthetic_rgb_stream(bpm, duration_s, fps=30, noise_level=0.02, seed=0):
     return stream
 
 
+def _synthetic_rgb_stream_resp(bpm, rr_brpm, duration_s, fps=30,
+                               noise_level=0.02, seed=0):
+    """
+    Like _synthetic_rgb_stream, but with a KNOWN respiratory rate imposed on
+    the pulse via all three respiratory-induced variations the RR estimator
+    fuses (see core.rppg's _RR_* block):
+
+      RIAV — pulse amplitude is modulated by the respiratory waveform
+      RIIV — the DC baseline is offset by the respiratory waveform
+      RIFV — instantaneous pulse RATE is modulated (respiratory sinus
+             arrhythmia), implemented by integrating phase rather than
+             evaluating sin(2*pi*f*t), which is what actually makes the
+             beat-to-beat interval vary
+
+    Exercising all three matters: a generator that only did amplitude
+    modulation would let a broken RIIV/RIFV channel pass unnoticed.
+    """
+    rng = random.Random(seed)
+    n = int(duration_s * fps)
+    hr_hz = bpm / 60.0
+    rr_hz = rr_brpm / 60.0
+
+    base_r, base_g, base_b = 180.0, 130.0, 110.0
+    amp_r, amp_g, amp_b = 0.010, 0.018, 0.006
+
+    drift_freq = rng.uniform(0.02, 0.05)
+    drift_phase = rng.uniform(0, 2 * math.pi)
+
+    stream = []
+    phase = 0.0
+    for i in range(n):
+        t = i / fps
+        resp = math.sin(2 * math.pi * rr_hz * t)
+
+        # RIFV: respiratory sinus arrhythmia — +/-6% instantaneous rate.
+        phase += 2.0 * math.pi * hr_hz * (1.0 + 0.06 * resp) / fps
+        pulse = math.sin(phase) + 0.25 * math.sin(2.0 * phase)
+
+        # RIAV: +/-30% pulse amplitude with respiration.
+        amp_mod = 1.0 + 0.30 * resp
+        # RIIV: baseline rides on respiration (comparable in size to the
+        # illumination drift, so it cannot simply be filtered away as trend).
+        riiv = 0.008 * resp
+        drift = 0.01 * math.sin(2 * math.pi * drift_freq * t + drift_phase)
+
+        r = base_r * (1 + amp_r * pulse * amp_mod + drift + riiv) + rng.gauss(0, noise_level * base_r)
+        g = base_g * (1 + amp_g * pulse * amp_mod + drift + riiv) + rng.gauss(0, noise_level * base_g)
+        b = base_b * (1 + amp_b * pulse * amp_mod + drift + riiv) + rng.gauss(0, noise_level * base_b)
+        stream.append((r, g, b))
+    return stream
+
+
+def run_synthetic_rr_validation(algorithm="CHROM"):
+    """
+    Synthetic self-test for RESPIRATORY rate.
+
+    This exists because RR had no automated regression test at all while HR
+    had one, which is how a badly broken RR estimator survived: its
+    "respiration filter" was actually passing 42-60 breaths/min (the
+    pulse-band clamps in _safe_butter_sos were silently rewriting the
+    requested 0.10-0.50 Hz band to 0.70-1.00 Hz), and nothing caught it.
+
+    Synthetic only proves the DSP maths. The real-data RR number comes from
+    scripts/validate_rr_bidmc.py (53 recordings, human-annotated breaths).
+    """
+    print("=" * 80)
+    print(f"SYNTHETIC RESPIRATORY-RATE VALIDATION — algorithm={algorithm}")
+    print("Known-RR streams with all three RIVs (amplitude/baseline/RSA) imposed.")
+    print("DSP-only: see scripts/validate_rr_bidmc.py for real ground-truth RR.")
+    print("=" * 80)
+    print(f"{'GT RR':<8} | {'HR':<6} | {'Est. RR':<9} | {'Abs Err':<9} | {'Readings':<9} | {'Stab':<5}")
+    print("-" * 80)
+
+    # RR needs a long window by physics (see _RR_WINDOW_SEC); 90 s gives the
+    # 60 s buffer room to fill and then contribute several readings.
+    cases = [(12.0, 60), (15.0, 75), (18.0, 72), (22.0, 90), (27.0, 105)]
+    errors = []
+
+    for gt_rr, hr in cases:
+        rppg = AdvancedRPPG(fps=30, window_size=300, algorithm=algorithm)
+        stream = _synthetic_rgb_stream_resp(hr, gt_rr, duration_s=90.0,
+                                            seed=int(gt_rr * 10))
+        for rgb in stream:
+            rppg.add_frame(rgb)
+            rppg.process_ppg_signal()
+
+        summary = rppg.get_final_summary()
+        est_rr = summary.get('final_rr')
+        if est_rr is None:
+            print(f"{gt_rr:<8.1f} | {hr:<6} | {'NOT MEAS':<9} | {'-':<9} | "
+                  f"{summary.get('rr_readings', 0):<9} | {'-':<5}")
+            continue
+        err = abs(est_rr - gt_rr)
+        errors.append(err)
+        print(f"{gt_rr:<8.1f} | {hr:<6} | {est_rr:<9.1f} | {err:<9.2f} | "
+              f"{summary.get('rr_readings', 0):<9} | "
+              f"{summary.get('rr_stability_percent', 0):<5}")
+
+    print("-" * 80)
+    if errors:
+        mae = sum(errors) / len(errors)
+        rmse = math.sqrt(sum(e * e for e in errors) / len(errors))
+        print(f"Synthetic RR MAE:  {mae:.2f} br/min across {len(errors)} known-RR trials")
+        print(f"Synthetic RR RMSE: {rmse:.2f} br/min")
+    else:
+        print("Synthetic RR: NO CASE PRODUCED A READING — RR path is broken.")
+    print("=" * 80)
+    return errors
+
+
 def run_synthetic_validation(algorithm="CHROM"):
     print("=" * 80)
     print(f"SYNTHETIC SIGNAL VALIDATION — algorithm={algorithm}")
@@ -261,11 +371,19 @@ def main():
         "--skip-synthetic", action="store_true",
         help="Skip the synthetic self-test (only run --manifest).",
     )
+    parser.add_argument(
+        "--skip-rr", action="store_true",
+        help="Skip the synthetic respiratory-rate self-test. It needs 5 x 90 s "
+             "of simulated signal, so it is slower than the HR self-test.",
+    )
     args = parser.parse_args()
 
     if not args.skip_synthetic:
         run_synthetic_validation(algorithm=args.algorithm)
         print()
+        if not args.skip_rr:
+            run_synthetic_rr_validation(algorithm=args.algorithm)
+            print()
 
     if args.manifest:
         run_manifest_validation(args.manifest)
