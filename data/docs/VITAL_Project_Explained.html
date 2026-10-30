@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VITAL — Project Explained</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm;
+          @bottom-left  { content: "VITAL — Vision-Based Intelligent Triage & Lifesign Analytics"; font: 8.5pt "Segoe UI", Arial, sans-serif; color: #5b6b85; }
+          @bottom-right { content: "Page " counter(page); font: 8.5pt "Segoe UI", Arial, sans-serif; color: #5b6b85; } }
+  @page :first { margin: 0; @bottom-left { content: none; } @bottom-right { content: none; } }
+  :root { --navy:#14284b; --ink:#1d2b44; --grey:#5b6b85; --line:#d3dbea; --panel:#eef3fb; --orange:#f26b1d; --soft:#fff4ec; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: "Segoe UI", "Inter", Arial, sans-serif; color: var(--ink); font-size: 10.4pt; line-height: 1.5; margin: 0; }
+  h1 { font-size: 20pt; color: var(--navy); margin: 0 0 4mm; letter-spacing: -.3px; }
+  h2 { font-size: 14.5pt; color: var(--navy); margin: 8mm 0 2.5mm; padding-bottom: 1.5mm; border-bottom: 2.2px solid var(--orange); break-after: avoid; }
+  h3 { font-size: 11.5pt; color: var(--navy); margin: 5mm 0 1.5mm; break-after: avoid; }
+  p { margin: 0 0 2.4mm; }
+  ul { margin: 0 0 3mm; padding-left: 5.2mm; } li { margin: 0 0 1.3mm; }
+  code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 9pt; background: #f1f4fa; padding: 0 1.2mm; border-radius: 1mm; color: #1d2b44; }
+  .cover { height: 297mm; padding: 38mm 24mm 0; background: linear-gradient(180deg,#14284b 0%,#14284b 58%,#fff 58%); color: #fff; page-break-after: always; position: relative; }
+  .cover .tag { display:inline-block; background: var(--orange); color:#fff; font-weight:700; letter-spacing:2px; font-size:10pt; padding:2mm 5mm; border-radius: 99px; }
+  .cover h1 { color:#fff; font-size: 40pt; margin: 14mm 0 3mm; line-height:1.08; }
+  .cover .sub { font-size: 16pt; color:#cfd9ee; max-width: 150mm; }
+  .cover .card { position:absolute; left:24mm; right:24mm; top:176mm; background:#fff; color:var(--ink); border:1.5px solid var(--line); border-radius:4mm; padding:7mm 8mm; box-shadow:0 2mm 6mm rgba(20,40,75,.12); }
+  .cover .card h3 { margin-top:0; font-size:12.5pt; }
+  .cover .meta { position:absolute; left:24mm; bottom:18mm; color:var(--grey); font-size:9.5pt; }
+  .kv { display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 4mm; margin-top: 3mm; }
+  .kv div { background: var(--panel); border-radius: 3mm; padding: 3.5mm 4mm; }
+  .kv b { display:block; font-size: 19pt; color: var(--navy); line-height:1.1; } .kv span { font-size: 8.8pt; color: var(--grey); }
+  .simple { background: var(--soft); border-left: 3mm solid var(--orange); padding: 3mm 4.5mm; border-radius: 0 2.5mm 2.5mm 0; margin: 1.5mm 0 3mm; break-inside: avoid; }
+  .simple b.t { color: var(--orange); text-transform: uppercase; letter-spacing: .8px; font-size: 8.5pt; display:block; margin-bottom: .6mm; }
+  .note { background: #fff7e0; border-left: 3mm solid #e0a100; padding: 3mm 4.5mm; border-radius: 0 2.5mm 2.5mm 0; margin: 2mm 0 3mm; break-inside: avoid; }
+  .good { background:#eaf7ef; border-left: 3mm solid #1c9b5a; padding: 3mm 4.5mm; border-radius: 0 2.5mm 2.5mm 0; margin: 2mm 0 3mm; break-inside: avoid; }
+  table { width:100%; border-collapse: collapse; margin: 1.5mm 0 4mm; font-size: 9.6pt; break-inside: avoid; }
+  th { background: var(--navy); color:#fff; text-align:left; padding: 2mm 3mm; font-weight:600; }
+  td { padding: 1.9mm 3mm; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:nth-child(even) td { background:#f7f9fd; } td.num, th.num { text-align:right; white-space:nowrap; } tr.hl td { background:#fff0e3; font-weight:700; }
+  .flow { display:flex; flex-wrap:wrap; align-items:center; gap: 2mm 1.6mm; margin: 3mm 0 4mm; }
+  .chip { background: var(--panel); border:1.5px solid var(--line); border-radius: 2.5mm; padding: 1.8mm 3mm; font-weight:600; color:var(--navy); font-size:9.3pt; }
+  .chip.hot { background: var(--orange); border-color:#d95a10; color:#fff; } .arr { color: var(--grey); font-weight:700; }
+  .layers { margin: 3mm 0 4mm; } .layer { display:flex; border:1.5px solid var(--line); background: var(--panel); border-radius: 3mm; margin-bottom: 2.2mm; overflow:hidden; break-inside: avoid; }
+  .layer .lt { width: 27mm; background: var(--navy); color:#fff; padding: 2.5mm; font-size: 8.5pt; display:flex; flex-direction:column; justify-content:center; } .lt b { letter-spacing:1px; font-size:8pt; color:#ffb27d; }
+  .layer .lb { flex:1; padding: 2.4mm 3mm; display:flex; flex-wrap:wrap; gap: 1.6mm; } .lb .c { background:#fff; border:1.2px solid var(--line); border-radius: 2mm; padding: 1.3mm 2.4mm; font-size: 8.8pt; }
+  .lb .c b { color: var(--navy); } .lb .c.hot { background: var(--orange); border-color:#d95a10; color:#fff; } .lb .c.hot b { color:#fff; }
+  .down { text-align:center; color:var(--grey); font-size:8.5pt; margin: -0.6mm 0 1.2mm; }
+  .two { display:grid; grid-template-columns: 1fr 1fr; gap: 5mm; } .pb { break-before: page; }
+  .toc { columns: 2; column-gap: 10mm; margin: 2mm 0 0; padding-left: 0; list-style: none; } .toc li { margin: 0 0 1.6mm; break-inside: avoid; } .toc b { color: var(--orange); }
+</style>
+</head>
+<body>
+
+<!-- ============================ COVER ============================ -->
+<div class="cover">
+  <span class="tag">PROJECT EXPLAINED</span>
+  <h1>VITAL</h1>
+  <div class="sub">Vision-Based Intelligent Triage &amp; Lifesign Analytics — contactless vitals triage from an ordinary webcam</div>
+  <div class="card">
+    <h3>The project in one paragraph</h3>
+    <p>VITAL measures a patient's heart rate and breathing rate from a webcam, with no contact and no special sensor. A plain-rules clinical engine turns those vitals into an Emergency Severity Index (ESI) level, a Compensated Shock flag and a queue priority. Three AI agents then explain the result in plain language, and the patient joins a priority-sorted dispatch queue. The numbers are decided by rules, never by the AI.</p>
+    <div class="kv">
+      <div><b>~3.9 BPM</b><span>heart-rate error (MAE), 125 recorded sessions, 75 people</span></div>
+      <div><b>~1 br/min</b><span>respiration error (MAE), three recorded datasets</span></div>
+      <div><b>0 AI</b><span>language-model involvement in ESI, shock or priority</span></div>
+    </div>
+  </div>
+  <div class="meta">Prepared 31 October 2026 from the project's code, tests and validation records.<br>Accuracy figures are from recorded video and clinical datasets, not yet from a live-webcam study.</div>
+</div>
+
+<!-- ============================ CONTENTS ============================ -->
+<h1>Contents</h1>
+<ul class="toc">
+  <li><b>1</b> &nbsp;Problem and objectives</li>
+  <li><b>2</b> &nbsp;The system at a glance</li>
+  <li><b>3</b> &nbsp;How it works, step by step (13 points)</li>
+  <li><b>4</b> &nbsp;Safety design principles</li>
+  <li><b>5</b> &nbsp;Validation and results</li>
+  <li><b>6</b> &nbsp;Honest limitations</li>
+  <li><b>7</b> &nbsp;Future enhancements</li>
+  <li><b>8</b> &nbsp;Technology stack, project map, how to run</li>
+  <li><b>9</b> &nbsp;Glossary of terms</li>
+</ul>
+
+<!-- ============================ 1 ============================ -->
+<h2>1. Problem and objectives</h2>
+<h3>The problem</h3>
+<ul>
+  <li>In a busy emergency department, triage depends on a nurse measuring heart rate and breathing by hand or with contact devices. In a crowded waiting room, a seriously ill patient can wait unseen.</li>
+  <li>Contact monitors need staff time and equipment for every patient; a webcam is cheap and already everywhere.</li>
+</ul>
+<h3>Objectives</h3>
+<ul>
+  <li><b>Measure without contact:</b> extract heart rate and breathing rate from ordinary video.</li>
+  <li><b>Decide by rules, not by AI:</b> compute ESI acuity and the Compensated Shock flag with a deterministic, tested engine.</li>
+  <li><b>Explain the decision:</b> have AI agents write a clear clinical narrative that a triage nurse can trust, grounded in ESI guideline text.</li>
+  <li><b>Prioritise the queue:</b> keep every assessed patient in a priority-sorted dispatch board backed by a cloud database.</li>
+  <li><b>Validate honestly:</b> measure accuracy on real datasets with people the models never trained on, and report what did not work.</li>
+</ul>
+
+<!-- ============================ 2 ============================ -->
+<h2 class="pb">2. The system at a glance</h2>
+<p><b>The flow in one line:</b> camera frames are reduced to a colour signal, the signal becomes heart rate, breathing, HRV and quality scores, a rules engine turns them into a triage level, AI agents explain it, and the patient lands in the dispatch queue.</p>
+<div class="flow">
+  <span class="chip">Camera</span><span class="arr">→</span><span class="chip">Face ROI</span><span class="arr">→</span><span class="chip">rPPG (CHROM / POS)</span><span class="arr">→</span>
+  <span class="chip">HR ensemble</span><span class="arr">+</span><span class="chip">Respiration</span><span class="arr">+</span><span class="chip">HRV / stress / SQI</span><span class="arr">→</span>
+  <span class="chip hot">Clinical Rule Engine</span><span class="arr">→</span><span class="chip">Triage API</span><span class="arr">→</span><span class="chip">AI crew</span><span class="arr">→</span><span class="chip">Dispatch queue</span>
+</div>
+<div class="layers">
+  <div class="layer"><div class="lt"><b>LAYER 1</b>Frontend</div><div class="lb"><span class="c"><b>Vitals Monitor</b></span><span class="c"><b>Triage Dispatch</b></span><span class="c"><b>Clinical Crew</b></span><span class="c"><b>ARIA Assistant</b></span><span class="c">Next.js 16 · React · TypeScript · Tailwind</span></div></div>
+  <div class="down">MJPEG video stream + JSON over HTTP</div>
+  <div class="layer"><div class="lt"><b>LAYER 2</b>API</div><div class="lb"><span class="c"><b>Flask REST API</b> — video feed, status, upload, triage run, queue, chat, session state</span></div></div>
+  <div class="down">ROI colour per frame (R, G, B), live frames resampled to a uniform 30 Hz</div>
+  <div class="layer"><div class="lt"><b>LAYER 3</b>Processing</div><div class="lb"><span class="c"><b>Camera &amp; ROI</b> OpenCV</span><span class="c"><b>rPPG engine</b> CHROM, POS, Welch</span><span class="c"><b>HR ensemble</b> trees + conv net</span><span class="c"><b>Respiration &amp; HRV</b> RIV fusion</span><span class="c hot"><b>Clinical Rule Engine</b> no AI</span></div></div>
+  <div class="down">HR, RR, HRV, SQI, stress, ESI, shock flag</div>
+  <div class="layer"><div class="lt"><b>LAYER 4</b>AI layer</div><div class="lb"><span class="c"><b>CrewAI agents</b> Perception · Diagnostic · Coordinator</span><span class="c"><b>NVIDIA LLM pool</b> self-healing model choice</span></div></div>
+  <div class="down">triage record + narrative</div>
+  <div class="layer"><div class="lt"><b>LAYER 5</b>Data</div><div class="lb"><span class="c"><b>PostgreSQL (Neon)</b> patients, tokens, queue</span><span class="c"><b>Public datasets</b> UBFC-rPPG, UBFC-Phys, BIDMC, CapnoBase, VitalDB</span></div></div>
+</div>
+
+<h3>Reading the diagram</h3>
+<ul>
+  <li><b>Top to bottom is the path of one patient:</b> the screen asks the API, the API feeds frames to the processing modules, their numbers go to the AI layer, and the finished record goes to the database.</li>
+  <li><b>The orange block is the only decision-maker.</b> Everything above it produces measurements; everything below it explains or stores a decision that has already been made.</li>
+  <li><b>Everything is optional except the rules.</b> If the ensemble models, the AI models or the database are unavailable, the app degrades step by step instead of stopping (see section 4).</li>
+  <li><b>Data flows both ways in time:</b> frames stream continuously (about 30 per second), while the triage run happens once, when the measurement window ends.</li>
+</ul>
+
+<!-- ============================ 3 ============================ -->
+<h2 class="pb">3. How it works, step by step</h2>
+<p>Thirteen points follow the data from the screen the nurse watches, down through the signal processing, and back up through triage to the dispatch queue.</p>
+
+<h3>3.1 Vitals Monitor (frontend)</h3>
+<div class="simple"><b class="t">In simple words</b>The screen the nurse watches: live video, the numbers and the pulse wave.</div>
+<ul>
+  <li>A Next.js page (<code>BedsideMonitor.tsx</code>) polls the backend <code>/status</code> every <b>300 ms</b> and shows the camera as an MJPEG stream.</li>
+  <li>It shows <b>HR, RR, the Baevsky stress index and signal quality (SQI)</b>, with a live pulse (pleth) trace.</li>
+  <li>Alarm limits are printed beside each number and <b>mirror the clinical engine</b>: HR &gt; 100 or &lt; 50, RR &gt; 20, stress &gt; 150 (elevated &gt; 80), SQI &lt; 40. The monitor decides nothing clinical; it only displays what the backend reports.</li>
+</ul>
+
+<h3>3.2 Flask API and session state</h3>
+<div class="simple"><b class="t">In simple words</b>The traffic controller that pulls every frame through the processing chain.</div>
+<ul>
+  <li><code>web/routes.py::generate_frames()</code> loops once per frame: get the frame → feed the signal processing → update the metrics → stream the image.</li>
+  <li><code>SessionState</code> holds the histories and live metrics behind a <code>processing_lock</code>, so threads cannot corrupt shared data. One workstation = one camera = one live session.</li>
+  <li>Uploads are decoupled from playback: <code>/upload</code> only stores a file; <code>/api/start_uploaded_video</code> starts it. A fresh <code>AdvancedRPPG</code> engine is built per session.</li>
+  <li><b>Files</b> use the file's own real frame rate. <b>A live camera</b> uses the resampler in point 3.5.</li>
+  <li>Main endpoints: <code>/video_feed</code>, <code>/status</code>, <code>/upload</code>, <code>/start_webcam</code>, <code>/api/triage_run</code>, <code>/api/triage_queue</code>, <code>/api/chat</code>, <code>/api/generate_report</code>.</li>
+</ul>
+
+<h3>3.3 Camera and ROI extraction (<code>core/camera.py</code>)</h3>
+<div class="simple"><b class="t">In simple words</b>Find the face, then measure how its skin colour flickers with each heartbeat.</div>
+<ul>
+  <li>OpenCV captures frames. A <b>Haar-cascade</b> detector finds the face. The newer MediaPipe face mesh is not available in the installed version, so Haar is what really runs.</li>
+  <li>Three skin patches are used: <b>forehead (weight 0.5)</b> and <b>both cheeks (0.25 each)</b>. Each frame gives one averaged <b>(R, G, B)</b> value.</li>
+  <li>A frame-to-frame <b>motion delta</b> is computed and used for quality gating and as a model feature.</li>
+</ul>
+
+<h3>3.4 rPPG engine (<code>core/rppg.py</code>, class <code>AdvancedRPPG</code>)</h3>
+<div class="simple"><b class="t">In simple words</b>Each heartbeat pushes blood into the skin and changes its colour by a tiny amount. We extract that tiny signal and find its rhythm.</div>
+<ul>
+  <li><b>Ring buffer</b> of the last 10 s of RGB samples.</li>
+  <li><b>CHROM projection</b> (de Haan): normalise each channel by its mean, X = 3R − 2G, Y = 1.5R + G − 1.5B, pulse S = X − (σ<sub>X</sub>/σ<sub>Y</sub>)·Y. This cancels the skin-tone and lighting part common to all channels.</li>
+  <li><b>POS projection:</b> S1 = G − B, S2 = −2R + G + B, pulse = S1 + (σ<sub>S1</sub>/σ<sub>S2</sub>)·S2. Used as a second, independent view of the same frames.</li>
+  <li><b>Band-pass</b> (zero-phase Butterworth) over 42–180 BPM; once a rate is confirmed the band narrows around it (adaptive filter).</li>
+  <li><b>Welch spectrum</b> with a Hann window; the strongest peak is the heart rate.</li>
+  <li><b>Harmonic fixes:</b> a peak at half or double the true rate is the classic error; a sub-harmonic promotion check corrects it.</li>
+  <li><b>BPM lock (hysteresis)</b> only moves when the evidence is consistent; a <b>history gate</b> rejects readings far from the recent median, with an escape hatch for a bad cold start.</li>
+  <li><b>Session answer:</b> the IQR-filtered median over all accepted readings.</li>
+</ul>
+
+<h3>3.5 Live-camera resampler (<code>core/live_resampler.py</code>)</h3>
+<div class="simple"><b class="t">In simple words</b>A webcam does not deliver a perfectly steady 30 frames per second. We re-time its frames onto a steady 30 Hz clock so the maths stays correct.</div>
+<ul>
+  <li>The engine converts every frequency to BPM using <b>one fixed frame rate</b> and ignores timestamps. A webcam driver reports a nominal 30 fps, but the real loop delivered about 10 fps on the development machine.</li>
+  <li>That scaled every frequency by about 3× (heart rate came out 51–147 BPM for a true 98–111) and starved respiration of samples.</li>
+  <li><b>Fix:</b> live frames are resampled by timestamp onto a uniform 30 Hz grid before they reach the engine. Large gaps (face lost, stalled camera) restart the grid instead of inventing data. Uploaded files are unchanged.</li>
+  <li><b>Verified</b> on recorded sessions rebuilt as camera streams at 6, 8, 10, 15, 20, 24, 30, 45, 60 and 120 fps: heart rate stayed within about 1–2 BPM of the native answer at every rate. Below roughly 6 fps a pulse cannot be recovered.</li>
+</ul>
+
+<h3>3.6 HR ensemble (<code>core/hr_ensemble.py</code>)</h3>
+<div class="simple"><b class="t">In simple words</b>Instead of trusting one spectral peak, two different models vote on which peak is the real heart rate.</div>
+<ul>
+  <li>A second engine runs <b>POS</b> on the same frames, so every cycle has two 116-bin spectra covering 0.70–3.00 Hz.</li>
+  <li><b>Peak selector:</b> 200 gradient-boosted trees score up to a few candidate peaks per cycle on 29 features (peak power, rank, harmonics, signal quality, motion…) and pick the best.</li>
+  <li><b>Spectro-temporal tracker:</b> a convolutional network over the last 11 spectra, one second apart, asks whether a peak <i>persists</i> over time. It was pre-trained on a GPU physiological simulator, then fine-tuned on real recordings.</li>
+  <li>The answer is the <b>mean of the two session medians</b>. Both models are exported as plain numpy arrays, so the app needs no torch or scikit-learn, and they run on a worker thread so the video never stalls.</li>
+  <li>If the model files are missing or fail, the older hybrid (ML-corrected) and classical path takes over automatically.</li>
+</ul>
+
+<h3>3.7 Respiration rate (RIV fusion)</h3>
+<div class="simple"><b class="t">In simple words</b>Breathing leaves a faint trace on the pulse: it changes the pulse's height and baseline.</div>
+<ul>
+  <li>Each heartbeat is detected and two respiratory-induced variations are extracted: <b>RIAV</b> (pulse amplitude) and <b>RIIV</b> (baseline intensity).</li>
+  <li>Each series is resampled to a uniform <b>4 Hz</b> with a <b>cubic spline</b>; this also removes the pulse itself, which sits far above 2 Hz.</li>
+  <li>The search band adapts to the heart rate. The two channels are filtered and fused by the median over a <b>60 s</b> window, updated about twice a second.</li>
+  <li><b>Confidence</b> comes from how well the two channels agree. A reading below 30% is suppressed, so you see "--" instead of a wrong number. Session RR is the IQR median of accepted readings.</li>
+</ul>
+
+<h3>3.8 HRV, stress and signal quality</h3>
+<ul>
+  <li><b>HRV</b> is the RMSSD of beat-to-beat intervals (reported clipped to 5–100 ms). The <b>Baevsky stress index</b> summarises how narrow the interval distribution is.</li>
+  <li><b>SQI</b> (signal quality index) is a weighted blend of five checks: spectral peak concentration 40%, kurtosis 20%, entropy 20%, zero-crossing regularity 10%, autocorrelation 10%.</li>
+  <li>A low SQI lowers the confidence of the triage result and is shown to the nurse.</li>
+</ul>
+
+<h3>3.9 Clinical Rule Engine (<code>core/clinical.py</code>) — the decision-maker</h3>
+<div class="simple"><b class="t">In simple words</b>A plain-rules calculator, with no AI, that decides who is most urgent.</div>
+<ul>
+  <li><b>Limits:</b> tachycardia HR &gt; 100, bradycardia HR &lt; 50, tachypnea RR &gt; 20, HRV &lt; 20 ms is low, stress index &gt; 80 elevated and &gt; 150 critical. Children use age-specific limits.</li>
+  <li><b>Compensated Shock</b> = HR &gt; 100 <b>and</b> RR &gt; 20 together. Any shock flag forces manual review, as does every patient under 18.</li>
+  <li><b>Risk score</b> = 0.55·(HR term × RR term) + 0.25·max(HR term, RR term) + 0.12·stress term + 0.08·HRV term.</li>
+  <li><b>ESI:</b> shock with risk ≥ 70 → ESI 1. Shock, or risk ≥ 55, or marked bradycardia → ESI 2. One elevated vital or high stress → ESI 3. Weak signs → ESI 4. None → ESI 5.</li>
+  <li><b>Priority (1–100)</b> = ((6 − ESI)/5 × 0.7 + risk/100 × 0.3) × 100, so the queue is a smooth ranking and not five buckets.</li>
+  <li>If heart rate cannot be read, the result defaults to ESI 3 with manual review. If respiration alone is missing, the engine still assesses on heart rate (shock needs both).</li>
+</ul>
+<div class="good"><b>Worked example (demo clip):</b> HR 99.6 and RR 11 are both normal, but the stress index was 122. Stress term = (122 − 80)/70 = 0.6, so ESI 3 (stress ≥ 0.5). Risk = 0.12 × 0.6 ≈ 7.3, priority = (0.42 + 0.022) × 100 = 44.</div>
+
+<h3>3.10 Triage run API (<code>/api/triage_run</code>)</h3>
+<ul>
+  <li>Collects the session vitals (ensemble first, then hybrid, then classical) and runs the rules engine; retrieves matching ESI guideline text for the agents.</li>
+  <li>The ESI level, priority and shock flag stored in the record are <b>always the engine's output, never parsed from AI text</b>. If the AI crew fails, deterministic narrative text is stored and triage still completes.</li>
+  <li>The patient and a queue token are saved to Neon in a single statement; a unique index guarantees two patients can never get the same token.</li>
+</ul>
+
+<h3>3.11 Clinical Crew (CrewAI, <code>agents/crew.py</code>)</h3>
+<div class="simple"><b class="t">In simple words</b>Three AI writers who explain the decision. They cannot change it.</div>
+<table>
+  <tr><th style="width:26%">Agent</th><th>Job</th></tr>
+  <tr><td><b>Perception</b> — Sensor Perception &amp; Signal Specialist</td><td>Restates the measured vitals exactly, without inventing values.</td></tr>
+  <tr><td><b>Diagnostic</b> — Clinical Diagnostic Specialist</td><td>Explains <i>why</i> this ESI level was assigned, in clear clinical language, using the retrieved guideline text.</td></tr>
+  <tr><td><b>Coordinator</b> — Emergency Department Coordinator</td><td>Writes the one-line queue summary; its ESI, priority and shock fields must match the engine's exactly.</td></tr>
+</table>
+<ul>
+  <li>The three run <b>sequentially</b>. The model is chosen by <code>agents/llm_pool.py</code>, which probes NVIDIA-hosted models, ranks the live ones and drops dead ones, so a model being retired does not break the app. If the whole pool is down, the deterministic result still stands.</li>
+  <li><b>Why the AI is kept out of the numbers:</b> in a measured test of 16 real runs, the model restated the priority score correctly only <b>6.2%</b> of the time (ESI level 81.2%, shock flag 93.8%), even when told to copy it.</li>
+</ul>
+
+<h3>3.12 Triage Dispatch and the queue</h3>
+<ul>
+  <li>The dispatch board lists every assessed patient from the Neon PostgreSQL database, sorted by ESI first and priority second, with colour bands for ESI 1–5.</li>
+  <li>Selecting a patient shows the vitals, the shock indicator, the rationale and the AI narrative. Staff can call the next patient and update statuses.</li>
+  <li>A connection pool and autocommit keep database round trips low; a real database failure raises an error, so an outage can never look like an empty queue.</li>
+</ul>
+
+<h3>3.13 ARIA Assistant</h3>
+<ul>
+  <li>A chat assistant (<code>/api/chat</code>) that answers questions about the patients in the triage queue, reading their records from the database; it can also take an image. It uses the same self-healing model pool and is informational only: it cannot change any triage result.</li>
+</ul>
+
+<!-- ============================ 4 ============================ -->
+<h2>4. Safety design principles</h2>
+<ul>
+  <li><b>The rules engine is the single source of truth</b> for ESI, shock and priority. AI text is never parsed for numbers (an earlier version did this, and it was removed).</li>
+  <li><b>Fail safe, not silent:</b> an unreliable respiration reading is shown as "--" (confidence gate at 30%, matched in the display and in the clinical engine) rather than as a plausible-looking wrong number.</li>
+  <li><b>Any shock flag forces manual review</b>, and so does every patient under 18, because the camera has never been validated on children.</li>
+  <li><b>Graceful degradation:</b> no ensemble model → hybrid/classical heart rate; no AI model → deterministic narrative; no heart rate → ESI 3 with manual review.</li>
+  <li><b>Honest validation:</b> every learned model is scored on people it never trained on; changes to the signal code are re-checked against a synthetic self-test (HR error 0.29 BPM) before they are trusted.</li>
+</ul>
+
+<!-- ============================ 5 ============================ -->
+<h2>5. Validation and results</h2>
+<h3>5.1 Heart rate — 125 recorded sessions, 75 people</h3>
+<p>Datasets: UBFC-rPPG (50 sessions) and UBFC-Phys (75 sessions: rest, speech and arithmetic tasks). Error = mean absolute difference from a finger pulse-oximeter reference, cleaned of corrupted readings. Every learned model is scored out-of-fold: no person is ever scored by a model that trained on them.</p>
+<table>
+  <tr><th>Method</th><th class="num">MAE (BPM)</th><th>Comment</th></tr>
+  <tr><td>Classical CHROM</td><td class="num">11.35</td><td>No learning; the baseline</td></tr>
+  <tr><td>Old hybrid (ML correction)</td><td class="num">6.69</td><td>Regression; shrinks toward the average</td></tr>
+  <tr><td>Peak selector</td><td class="num">4.24</td><td>Chooses a real spectral peak</td></tr>
+  <tr><td>Spectro-temporal tracker</td><td class="num">4.19</td><td>Fewer very large misses</td></tr>
+  <tr class="hl"><td>Final ensemble (selector + tracker)</td><td class="num">≈ 3.9</td><td>3.75 for the pair; 3.94 for the mean of four models fixed in advance</td></tr>
+</table>
+<div class="note"><b>How to quote it:</b> "about 3.9 BPM". The pair behind 3.75 was chosen after trying about 22 combinations, so 3.94 is the unbiased figure. Against the selector alone, the gain is 0.49 BPM with a 95% interval of +0.03 to +1.09: real, but modest.</div>
+<h3>5.2 Respiration — recorded reference datasets</h3>
+<table>
+  <tr><th>Dataset</th><th>Reference</th><th class="num">Session MAE (br/min)</th></tr>
+  <tr><td>BIDMC (53 recordings)</td><td>Two human annotators counting breaths</td><td class="num">0.96</td></tr>
+  <tr><td>CapnoBase (42 recordings)</td><td>Capnography</td><td class="num">1.84</td></tr>
+  <tr class="hl"><td>VitalDB (40 surgeries, never tuned on)</td><td>Anaesthesia monitor</td><td class="num">1.03</td></tr>
+</table>
+<p>Quote <b>"about 1 breath/min"</b>, using the held-out VitalDB figure as the unbiased one. These datasets are contact pulse-oximeter signals, so they validate the breathing algorithm, not the camera.</p>
+<h3>5.3 Other checks</h3>
+<ul>
+  <li><b>Synthetic self-test:</b> heart rate 0.29 BPM MAE (0.53 RMSE) across 50–140 BPM; synthetic respiration 4.4 br/min (harder than real data, an open item).</li>
+  <li><b>Clinical engine:</b> unit-tested on 8 hand-built scenarios (normal, isolated tachycardia/tachypnea, borderline and severe shock, bradycardia, low signal, no signal).</li>
+  <li><b>Frame-rate robustness:</b> HR within about 1–2 BPM of native at 6–120 fps (live resampler test).</li>
+  <li><b>End-to-end demo:</b> a 52 s test clip (truth 98.3 BPM) gave HR 99.6 BPM, RR 11 at 90% confidence, ESI 3, priority 44/100.</li>
+  <li><b>Label audit:</b> the reference heart rates for part of the data were found to contain dropouts (0 and 7 BPM readings); corrected labels are used throughout and both versions are reported.</li>
+</ul>
+
+<!-- ============================ 6 ============================ -->
+<h2>6. Honest limitations</h2>
+<ul>
+  <li><b>No live-webcam study yet.</b> All accuracy numbers come from recorded datasets. Heart rate on a live camera looks plausible, but has not been measured against a reference.</li>
+  <li><b>Live respiration is not reliable.</b> In one live test the app showed 7 breaths/min at 1% confidence while the subject counted about 22. The baseline-brightness channel locks onto slow drift from the webcam's auto-exposure. It is documented and left unfixed on purpose, because one counted session cannot validate a tuning. Respiration is claimed on recorded data only.</li>
+  <li><b>Speech and motion</b> remain the hardest conditions: a handful of speech and arithmetic sessions carry about a third of all heart-rate error.</li>
+  <li><b>Respiration shrinks toward the middle</b> (estimates compress toward 17–18 br/min), which biases toward <i>missing</i> tachypnea, the dangerous direction.</li>
+  <li><b>Skin-tone accuracy has not been evaluated</b>; the datasets carry no per-subject skin-tone labels. Inclusivity is a design goal, not a result.</li>
+  <li><b>Children</b> are always sent for manual review; infants' danger limits are above what the signal processing can report.</li>
+  <li><b>The face tracker is a Haar cascade</b>, which loses the face in some frames; a landmark tracker is available but not deployed.</li>
+  <li><b>The system is a prototype</b>, not a medical device, and one workstation handles one live patient at a time.</li>
+</ul>
+
+<!-- ============================ 7 ============================ -->
+<h2>7. Future enhancements</h2>
+<ul>
+  <li><b>Validate on a live webcam</b> against a reference oximeter and counted breathing, then tune on some sessions and test on the rest.</li>
+  <li><b>Fix live respiration:</b> lock the camera exposure, reject drift-locked readings, and let the live gauge use only recent confident readings.</li>
+  <li><b>Evaluate across skin tones</b> (Fitzpatrick scale) and across ages, and add children's data before relaxing manual review.</li>
+  <li><b>Motion-robust signal extraction:</b> a better face tracker (landmarks), and speech-aware handling of the cheeks.</li>
+  <li><b>More data and models:</b> additional subjects and webcam paced-breathing recordings to train and test the respiration model.</li>
+  <li><b>Clinical study</b> at one or more sites before any real-world use, including a regulatory review.</li>
+</ul>
+
+<!-- ============================ 8 ============================ -->
+<h2>8. Technology stack, project map, how to run</h2>
+<div class="two">
+<div>
+<h3>Technology stack</h3>
+<ul>
+  <li><b>Frontend:</b> Next.js 16, React, TypeScript, Tailwind CSS</li>
+  <li><b>Backend:</b> Python, Flask, OpenCV</li>
+  <li><b>Signal processing:</b> NumPy, SciPy</li>
+  <li><b>Models:</b> scikit-learn (training), PyTorch on GPU (training only); the app runs numpy only</li>
+  <li><b>AI layer:</b> CrewAI, NVIDIA-hosted LLMs</li>
+  <li><b>Data:</b> PostgreSQL on Neon</li>
+</ul>
+</div>
+<div>
+<h3>Where things live</h3>
+<ul>
+  <li><code>core/rppg.py</code> — signal engine</li>
+  <li><code>core/camera.py</code> — face and ROI</li>
+  <li><code>core/live_resampler.py</code> — live timing fix</li>
+  <li><code>core/hr_ensemble.py</code> — HR models</li>
+  <li><code>core/clinical.py</code> — ESI and shock rules</li>
+  <li><code>agents/</code> — crew, tools, model pool</li>
+  <li><code>web/</code> — Flask app, routes, database</li>
+  <li><code>frontend/src/</code> — dashboard</li>
+  <li><code>scripts/</code> — validation and research tools</li>
+</ul>
+</div>
+</div>
+<h3>How to run</h3>
+<ul>
+  <li><b>Backend</b> (port 5002): from the project folder, <code>.\venv\Scripts\python.exe app.py</code></li>
+  <li><b>Frontend</b> (port 3000): <code>cd frontend</code> then <code>npm run dev</code>; open <code>http://localhost:3000</code> in a single tab.</li>
+  <li>A <code>.env</code> file needs <code>NVIDIA_API_KEY</code> and <code>DATABASE_URL</code>. To test without a webcam, upload a recorded video and press Load video.</li>
+  <li>After changing any signal-processing code, run <code>python scripts/validate_dataset.py</code>; it should still report 0.29 BPM synthetic error.</li>
+</ul>
+
+<!-- ============================ 9 ============================ -->
+<h2>9. Glossary of terms</h2>
+<table>
+  <tr><th style="width:24%">Term</th><th>Plain meaning</th></tr>
+  <tr><td><b>rPPG</b></td><td>Remote photoplethysmography: reading the pulse from tiny colour changes in the skin seen by a camera.</td></tr>
+  <tr><td><b>ROI</b></td><td>Region of interest: here, the forehead and cheek patches whose colour is averaged each frame.</td></tr>
+  <tr><td><b>CHROM / POS</b></td><td>Two published ways to combine the red, green and blue channels so the pulse stands out and lighting cancels.</td></tr>
+  <tr><td><b>Welch spectrum</b></td><td>A smoothed frequency chart of the signal; the tallest peak in the heart-rate range is the pulse rate.</td></tr>
+  <tr><td><b>Harmonic</b></td><td>A copy of the pulse peak at double (or half) its rate; picking it by mistake gives half or double the true heart rate.</td></tr>
+  <tr><td><b>SQI / SNR</b></td><td>Signal quality index and signal-to-noise ratio: how trustworthy the current reading is.</td></tr>
+  <tr><td><b>RIAV / RIIV</b></td><td>Respiratory-induced amplitude / intensity variation: how breathing changes the pulse's height and baseline.</td></tr>
+  <tr><td><b>HRV (RMSSD)</b></td><td>Heart-rate variability: the typical beat-to-beat change in interval length, in milliseconds.</td></tr>
+  <tr><td><b>Baevsky stress index</b></td><td>A score of how concentrated the beat intervals are; higher means more autonomic stress.</td></tr>
+  <tr><td><b>ESI</b></td><td>Emergency Severity Index, the five-level triage scale (1 = most urgent, 5 = least).</td></tr>
+  <tr><td><b>Compensated Shock</b></td><td>Early shock where the body keeps blood pressure up by raising heart and breathing rate; flagged here when both are above their limits.</td></tr>
+  <tr><td><b>MAE</b></td><td>Mean absolute error: the average size of the mistake, in the unit measured. Lower is better.</td></tr>
+  <tr><td><b>Out-of-fold</b></td><td>Scoring a model only on people it was not trained on, so the result is not flattering.</td></tr>
+  <tr><td><b>Ensemble</b></td><td>Combining two or more models; here, the peak selector and the tracker.</td></tr>
+</table>
+</body>
+</html>
