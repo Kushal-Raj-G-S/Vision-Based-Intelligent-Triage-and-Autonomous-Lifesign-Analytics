@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How the VITAL backend works — in simple words</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm 18mm 15mm;
+          @bottom-left  { content: "VITAL — how the backend works, in simple words"; font: 8.5pt "Segoe UI", Arial, sans-serif; color: #5b6b85; }
+          @bottom-right { content: "Page " counter(page); font: 8.5pt "Segoe UI", Arial, sans-serif; color: #5b6b85; } }
+  :root { --navy:#14284b; --ink:#1d2b44; --grey:#5b6b85; --line:#d3dbea; --panel:#eef3fb; --orange:#f26b1d; --soft:#fff4ec; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: "Segoe UI", "Inter", Arial, sans-serif; color: var(--ink); font-size: 10pt; line-height: 1.45; margin: 0; }
+  h1 { font-size: 22pt; color: var(--navy); margin: 0 0 1.5mm; letter-spacing: -.3px; }
+  .sub { color: var(--grey); font-size: 11pt; margin-bottom: 5mm; }
+  h2 { font-size: 14pt; color: var(--navy); margin: 7mm 0 2mm; padding-bottom: 1.4mm; border-bottom: 2.2px solid var(--orange); break-after: avoid; }
+  h2 .n { display:inline-block; background: var(--orange); color:#fff; border-radius: 99px; min-width: 7mm; height: 7mm; line-height: 7mm; text-align:center; font-size: 10.5pt; margin-right: 2mm; }
+  p { margin: 0 0 2.2mm; } code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 8.6pt; background:#e9eef8; padding: 0 1mm; border-radius: 1mm; }
+  .simple { background: var(--soft); border-left: 3mm solid var(--orange); padding: 2.6mm 4mm; border-radius: 0 2.5mm 2.5mm 0; margin: 1.5mm 0 2.5mm; break-inside: avoid; }
+  .simple b.t { color: var(--orange); text-transform: uppercase; letter-spacing: .8px; font-size: 8.2pt; display:block; margin-bottom: .5mm; }
+  table { width: 100%; border-collapse: collapse; margin: 0 0 3mm; }
+  th { background: var(--navy); color:#fff; text-align:left; padding: 1.8mm 2.8mm; font-size: 9pt; font-weight: 600; }
+  th.r { background: var(--orange); }
+  td { padding: 2mm 2.8mm; vertical-align: top; border-bottom: 1px solid var(--line); }
+  tr { break-inside: avoid; }
+  td.tech { width: 47%; background: #f6f8fd; color: var(--ink); }
+  td.easy { width: 53%; background: #fffaf5; }
+  td.tech b { color: var(--navy); }
+  .good { background:#eaf7ef; border-left: 3mm solid #1c9b5a; padding: 2.6mm 4mm; border-radius: 0 2.5mm 2.5mm 0; margin: 1.5mm 0 3mm; break-inside: avoid; }
+  .flow { display:flex; flex-wrap:wrap; align-items:center; gap: 1.8mm 1.4mm; margin: 2mm 0 3mm; }
+  .chip { background: var(--panel); border:1.5px solid var(--line); border-radius: 2.4mm; padding: 1.6mm 2.8mm; font-weight:600; color:var(--navy); font-size: 9pt; }
+  .chip.hot { background: var(--orange); border-color:#d95a10; color:#fff; } .arr { color: var(--grey); font-weight:700; }
+  ol.sum { margin: 1mm 0 0; padding-left: 5.5mm; } ol.sum li { margin: 0 0 1.6mm; }
+  .pb { break-before: page; }
+  thead { display: table-header-group; } thead tr { break-after: avoid; }
+  .simple { break-after: avoid; }
+  .final { break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<h1>How the VITAL backend works</h1>
+<div class="sub">From the camera to the dispatch queue — every step, with the technical names, explained in simple words</div>
+
+<p><b>The flow:</b></p>
+<div class="flow">
+  <span class="chip">Camera</span><span class="arr">→</span><span class="chip">ROI</span><span class="arr">→</span><span class="chip">rPPG (CHROM/POS)</span><span class="arr">→</span>
+  <span class="chip">HR ensemble</span><span class="arr">+</span><span class="chip">Respiration</span><span class="arr">+</span><span class="chip">HRV</span><span class="arr">→</span>
+  <span class="chip hot">Clinical Rule Engine</span><span class="arr">→</span><span class="chip">Triage API</span><span class="arr">→</span><span class="chip">AI crew</span><span class="arr">→</span><span class="chip">Dispatch queue</span>
+</div>
+<div class="simple"><b class="t">The whole idea in simple words</b>A webcam watches a face. A face changes colour very slightly with every heartbeat and every breath, too little for the eye to see. The software measures those tiny changes to get heart rate and breathing rate. A fixed set of medical rules then decides how urgent the patient is, three AI helpers write a plain explanation of that decision, and the patient is placed in a waiting list sorted by urgency.</div>
+
+<!-- ======================= 1 ======================= -->
+<h2><span class="n">1</span>Vitals Monitor (frontend)</h2>
+<div class="simple"><b class="t">In simple words</b>The screen the nurse watches. It shows the numbers and the live pulse wave.</div>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech">A Next.js page, <code>BedsideMonitor.tsx</code>. It polls the backend <code>/status</code> every <b>300 ms</b> and shows the video as an <b>MJPEG</b> stream.</td>
+      <td class="easy">The page keeps asking the server, "what are the numbers right now?", about three times a second. The video is just a stream of still pictures sent one after another, so fast that it looks like a movie.</td></tr>
+  <tr><td class="tech">It shows <b>HR, RR, the Baevsky stress index</b>, and <b>signal quality (SQI)</b>.</td>
+      <td class="easy">Four numbers: heartbeats per minute, breaths per minute, a stress score from the heart's rhythm, and a "how much can we trust this reading" score, like the signal bars on a phone.</td></tr>
+  <tr><td class="tech">Its alarm limits (<b>HR &gt; 100, HR &lt; 50, RR out of range</b>) are copied from the clinical engine, so the screen and the triage logic agree.</td>
+      <td class="easy">The screen's warning lines are exactly the same as the rules engine's lines, so the screen can never say "alarm" while the engine says "fine". The screen only displays; it decides nothing.</td></tr>
+</table>
+
+<!-- ======================= 2 ======================= -->
+<h2><span class="n">2</span>Flask API and session state</h2>
+<div class="simple"><b class="t">In simple words</b>The traffic controller that pulls every frame through the processing chain.</div>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech"><code>web/routes.py::generate_frames()</code> loops once per frame: <b>get frame → feed the DSP → update metrics</b>.</td>
+      <td class="easy">A conveyor belt. Each picture from the camera goes through the same three stations: pick it up, measure it, update the numbers on screen.</td></tr>
+  <tr><td class="tech"><b>SessionState</b> holds the histories and the live metrics, protected by a <b>processing_lock</b> so threads can't corrupt it.</td>
+      <td class="easy">One shared notebook holds all the current numbers. The lock is a "talking stick": only one part of the program may write in the notebook at a time, so nothing gets scrambled.</td></tr>
+  <tr><td class="tech">Video playback and analysis are decoupled: <code>/upload</code> only stores the file, and <code>/api/start_uploaded_video</code> starts it.</td>
+      <td class="easy">Uploading is like putting a DVD on the shelf; starting is pressing play. You can upload several and choose which to play later.</td></tr>
+  <tr><td class="tech">A fresh <b>AdvancedRPPG</b> engine is created per session, using the video's real frame rate. This avoids the old bug of assuming 30 fps for everything.<br><i>(Live camera: frames are re-timed to a steady 30 per second first.)</i></td>
+      <td class="easy">Every patient gets a brand-new calculator, set to the video's true speed. If the calculator wrongly thinks the video runs at 30 pictures a second when it really runs at 24, every heart rate comes out too high. A live webcam is uneven, so its pictures are first re-timed onto a steady 30-per-second clock.</td></tr>
+</table>
+
+<!-- ======================= 3 ======================= -->
+<h2><span class="n">3</span>Camera and ROI extraction (<code>core/camera.py</code>)</h2>
+<div class="simple"><b class="t">In simple words</b>Find the face, then measure how its skin colour flickers with each heartbeat.</div>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech"><b>OpenCV</b> captures the frames. A <b>Haar-cascade</b> detector finds the face. The MediaPipe face mesh isn't available in the installed version, so the Haar detector is what runs.</td>
+      <td class="easy">OpenCV is the tool that grabs pictures from the camera. The Haar detector is an older, reliable face finder that draws a box around the face. The fancier face-mesh tool isn't installed, so this simpler one is used.</td></tr>
+  <tr><td class="tech">Three skin patches: the <b>forehead (weight 0.5)</b> and <b>both cheeks (0.25 each)</b>. Each frame gives one average <b>(R, G, B)</b> value.</td>
+      <td class="easy">We look at three patches of skin where the pulse shows best. In each picture the colour of the patches is averaged into a single red-green-blue number, and the forehead counts double because it moves least.</td></tr>
+  <tr><td class="tech">A frame-to-frame <b>motion delta</b> is computed for quality gating.</td>
+      <td class="easy">We also measure how much the face moved since the last picture. A shaky picture is less trustworthy, so this number is used to judge how much to believe the reading.</td></tr>
+</table>
+
+<!-- ======================= 4 ======================= -->
+<h2><span class="n">4</span>rPPG engine (<code>core/rppg.py</code>, class <code>AdvancedRPPG</code>)</h2>
+<div class="simple"><b class="t">In simple words</b>Each heartbeat pushes blood into the skin and changes its colour by a tiny amount. We extract that tiny signal and find its rhythm.</div>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech"><b>Ring buffer:</b> the last 10 s of RGB samples.</td>
+      <td class="easy">A short memory that always holds the last 10 seconds of colour readings. When new ones arrive, the oldest drop out.</td></tr>
+  <tr><td class="tech"><b>CHROM projection (de Haan):</b> normalise each channel by its mean, then X = 3R − 2G and Y = 1.5R + G − 1.5B. The pulse is S = X − (σX/σY)·Y. This cancels the skin-tone and lighting component common to all channels.</td>
+      <td class="easy">When the room light changes, red, green and blue all move together. When blood flows, they move differently. This recipe keeps the "different" part and throws away the "together" part, like noise-cancelling headphones that remove the steady hum and keep the voice.</td></tr>
+  <tr><td class="tech"><b>POS projection:</b> S1 = G − B, S2 = −2R + G + B, pulse = S1 + (σS1/σS2)·S2.</td>
+      <td class="easy">A second, different recipe for the same job. Having two recipes lets the system cross-check itself.</td></tr>
+  <tr><td class="tech"><b>Band-pass:</b> a Butterworth filter (zero-phase) over 42–180 BPM. After a rate is confirmed, it narrows around it (adaptive filter).</td>
+      <td class="easy">A heartbeat can only be between about 42 and 180 beats a minute, so everything outside that range is muted. Once we know roughly the rate, the filter listens only in a narrow window around it, which cuts the noise further.</td></tr>
+  <tr><td class="tech"><b>Welch spectrum:</b> the power spectral density, with a Hann window. The strongest peak is the heart rate.</td>
+      <td class="easy">This turns the wiggly signal into a bar chart of "how strong is each rhythm". The tallest bar is the heart rate, like finding the loudest note in a chord.</td></tr>
+  <tr><td class="tech"><b>Harmonic fixes:</b> a peak at half or double the true rate is the classic error. A sub-harmonic promotion check fixes it.</td>
+      <td class="easy">A rhythm can leave an "echo" at double or half its speed, and the software can pick the echo by mistake (giving 45 instead of 90). This check looks for the echo and corrects to the real one.</td></tr>
+  <tr><td class="tech"><b>BPM lock (hysteresis):</b> the lock only moves when the evidence is consistent. <b>History gate:</b> a reading far from the median of recent readings is rejected, with an escape hatch for a bad cold start.</td>
+      <td class="easy">The answer does not jump around for one odd reading; it changes only when several readings agree on the new value. Readings wildly different from recent ones are ignored, unless the very first readings were wrong, in which case the system is allowed to correct itself.</td></tr>
+  <tr><td class="tech"><b>Session answer:</b> the IQR-filtered median over all accepted readings.</td>
+      <td class="easy">Throw out the extreme outliers, then take the middle value of all the rest. It is like asking a crowd for their guess and trusting the middle answer, not the loudest one.</td></tr>
+</table>
+
+<!-- ======================= 5 ======================= -->
+<h2><span class="n">5</span>HR ensemble (<code>core/hr_ensemble.py</code>), the new model</h2>
+<div class="simple"><b class="t">In simple words</b>Instead of trusting one peak, two models vote on which spectral peak is the real heart rate.</div>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech">A second engine runs <b>POS</b> on the same frames, so each cycle has two <b>116-bin spectra</b> covering 0.70–3.00 Hz.</td>
+      <td class="easy">Two bar charts of rhythms are made from the same pictures, one per recipe. Each chart has 116 bars covering every heart rate from 42 to 180 beats a minute.</td></tr>
+  <tr><td class="tech"><b>Peak selector:</b> gradient-boosted trees (200 trees) score each candidate peak on 29 features (power, rank, harmonics, signal quality…). It picks the best one per cycle.</td>
+      <td class="easy">Think of 200 small yes/no question charts ("is this peak the tallest? does it have an echo? is the signal clean?"). Each chart votes, and the peak with the best score is chosen as the heartbeat.</td></tr>
+  <tr><td class="tech"><b>Spectro-temporal tracker:</b> a convolutional network over the last 11 spectra, 1 s apart. It asks whether a peak <i>persists</i> over time.</td>
+      <td class="easy">This model watches the last 11 seconds of bar charts. A real heartbeat peak stays in about the same place, while noise jumps around. So it prefers the peak that holds still.</td></tr>
+  <tr><td class="tech">The answer is the <b>mean of the two session medians</b>.</td>
+      <td class="easy">Two experts give an answer and we average them. They tend to make different mistakes, so the average is more reliable than either one.</td></tr>
+  <tr><td class="tech">Both models are exported as <b>numpy arrays</b>, so they run without torch or sklearn, on a <b>worker thread</b> so the video never stalls.</td>
+      <td class="easy">The trained models are saved as simple number files, so the app does not need heavy machine-learning software. They run in the background, so the live video never freezes while they think.</td></tr>
+  <tr><td class="tech">If the models are missing or fail, the <b>older hybrid and classical path</b> takes over.</td>
+      <td class="easy">A safety net: if the new models are not available, the app quietly goes back to the older method instead of breaking.</td></tr>
+</table>
+
+<!-- ======================= 6 ======================= -->
+<h2><span class="n">6</span>Respiration rate (RIV fusion)</h2>
+<div class="simple"><b class="t">In simple words</b>Breathing leaves a faint trace on the pulse, changing its height, baseline and spacing.</div>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech">Each heartbeat is detected, and two respiratory-induced variations are extracted: <b>RIAV</b> (pulse amplitude) and <b>RIIV</b> (baseline intensity).</td>
+      <td class="easy">Every time you breathe in or out, each pulse gets slightly taller or shorter (RIAV), and the whole signal rises and falls slowly, like a boat on waves (RIIV). We measure both for every heartbeat.</td></tr>
+  <tr><td class="tech">Each is resampled to a uniform <b>4 Hz</b> with a <b>cubic spline</b>. This also removes the pulse itself, which is far above 2 Hz.</td>
+      <td class="easy">We join the beat-by-beat measurements with a smooth curve and read it four times a second. That is far too slow to "see" the fast heartbeat, so only the slow breathing wave remains.</td></tr>
+  <tr><td class="tech">The <b>search band adapts</b> to the heart rate; the two channels are filtered and <b>fused by the median over a 60 s window</b>.</td>
+      <td class="easy">We look for a rhythm only in the realistic breathing range, adjusted to the heart rate. We watch a full minute, because breathing is slow and one minute holds only about 12–20 breaths. The two channels' answers are combined by taking the middle value.</td></tr>
+  <tr><td class="tech"><b>Confidence</b> comes from how well the two channels agree. A reading below 30% is suppressed, so you see "--" instead of a wrong number. Session RR is the IQR median of accepted readings.</td>
+      <td class="easy">If the two channels give different answers, we do not trust either, and the screen shows "--". A blank is better than a confident wrong number. The final breathing rate is again the middle value of the readings that passed.</td></tr>
+</table>
+
+<!-- ======================= 7 ======================= -->
+<h2><span class="n">7</span>HRV, stress and signal quality</h2>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech"><b>HRV</b> is the RMSSD of the beat-to-beat intervals.</td>
+      <td class="easy">A healthy heart is not a perfect metronome: the gap between beats varies a little. RMSSD measures how much the gap changes from one beat to the next, in milliseconds.</td></tr>
+  <tr><td class="tech"><b>Baevsky stress index</b> summarises how narrow the interval distribution is.</td>
+      <td class="easy">Under stress the gaps between beats become very similar to each other. This index measures how "bunched together" the gaps are: bunched means more stress.</td></tr>
+  <tr><td class="tech"><b>SQI</b> is a weighted blend of five checks: spectral peak concentration (40%), kurtosis, entropy (20% each), zero-crossing regularity and autocorrelation (10% each).</td>
+      <td class="easy">A report card for the signal: how sharp the heartbeat peak is, how clean and regular the wave looks, and so on. A high score means a clean pulse; a low score means a messy one.</td></tr>
+  <tr><td class="tech">A low SQI lowers the confidence of the triage result.</td>
+      <td class="easy">If the signal was poor, the system says so, so a nurse knows not to lean on the numbers too heavily.</td></tr>
+</table>
+
+<!-- ======================= 8 ======================= -->
+<h2><span class="n">8</span>Clinical Rule Engine (<code>core/clinical.py</code>)</h2>
+<div class="simple"><b class="t">In simple words</b>A plain-rules calculator, with no AI, that decides who is most urgent.</div>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech"><b>Limits:</b> tachycardia HR &gt; 100, bradycardia HR &lt; 50, tachypnea RR &gt; 20, HRV &lt; 20 ms is low, stress index &gt; 80 elevated and &gt; 150 critical. Children use age-specific limits.</td>
+      <td class="easy">Fixed lines that mark "too fast", "too slow" and "stressed". Children's hearts and lungs run faster, so they get their own lines.</td></tr>
+  <tr><td class="tech"><b>Compensated Shock</b> is HR &gt; 100 <b>and</b> RR &gt; 20 together. Any shock flag forces manual review, as does every patient under 18.</td>
+      <td class="easy">When the body is in trouble but still coping, it speeds up both the heart and the breathing. Both fast at the same time is a serious warning. A human must always check a shock flag, and every child, because the system has never been tested on children.</td></tr>
+  <tr><td class="tech"><b>Risk score</b> = 0.55·(HR term × RR term) + 0.25·max(HR term, RR term) + 0.12·stress + 0.08·HRV.</td>
+      <td class="easy">A 0–100 danger score built from weighted parts: most weight (55%) for "heart and breathing both fast", some (25%) for either one being fast, and small amounts for stress (12%) and low heart-rate variability (8%).</td></tr>
+  <tr><td class="tech"><b>ESI:</b> shock with risk ≥ 70 gives ESI 1. Shock, or risk ≥ 55, or marked bradycardia gives ESI 2. A single elevated vital or high stress gives ESI 3. Weak signs give ESI 4, and none gives ESI 5.</td>
+      <td class="easy">ESI is the hospital's five-level urgency scale: 1 means immediate life-saving care, 5 means it can wait. The rules turn the danger score and the warning signs into one of those five levels.</td></tr>
+  <tr><td class="tech"><b>Priority 1–100:</b> (6 − ESI)/5 × 0.7 + risk × 0.3.</td>
+      <td class="easy">A single ranking number. The ESI level does most of the work, and the danger score breaks ties, so two ESI 3 patients can still be put in order.</td></tr>
+</table>
+<div class="good"><b>Worked example:</b> HR 99.6 and RR 11 are both normal, but the stress index was 122. That gives a stress term of (122 − 80)/70 = 0.6, so ESI 3 (stress ≥ 0.5). Risk is 0.12 × 0.6 = 7.3 and priority is 44.
+<br><b>In simple words:</b> the heart rate and breathing were fine, but the stress score was high, so the patient is "not urgent, but not ignored": level 3, priority 44 out of 100.</div>
+
+<!-- ======================= 9 ======================= -->
+<h2><span class="n">9</span>Triage run API (<code>/api/triage_run</code>)</h2>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech">It collects the session vitals (<b>ensemble first, then hybrid, then classical</b>) and runs <code>assess()</code>.</td>
+      <td class="easy">It gathers the measurements, using the best method that is available and falling back to simpler ones if needed, then hands them to the rules engine.</td></tr>
+  <tr><td class="tech">It saves the patient and a queue token to Neon in <b>one statement</b>, so two patients can never get the same token.</td>
+      <td class="easy">Like a ticket machine at a bank: it hands out the number and records the patient in a single step, so two people can never receive the same ticket, even at the same moment.</td></tr>
+  <tr><td class="tech">The ESI level, priority and shock flag are <b>always the rules engine's output</b>; the AI only writes the explanation. If the AI fails, a plain deterministic explanation is stored.</td>
+      <td class="easy">The urgency is decided by the rules first. The AI is only asked to describe it in words afterwards, so an AI mistake or outage can never change a patient's priority or lose the triage.</td></tr>
+</table>
+
+<!-- ======================= 10 ======================= -->
+<h2><span class="n">10</span>Clinical Crew (CrewAI, <code>agents/crew.py</code>)</h2>
+<div class="simple"><b class="t">In simple words</b>Three AI writers who explain the decision. They can't change it.</div>
+<table>
+  <thead><tr><th>Agent (technical)</th><th>Job (technical)</th><th class="r">In simple words</th></tr></thead>
+  <tr><td><b>Perception</b></td><td>Restates the measured vitals exactly.</td><td class="easy">The <b>reporter</b>: "here are the patient's numbers", copied without changing anything.</td></tr>
+  <tr><td><b>Diagnostic</b></td><td>Explains why this ESI level was assigned, using retrieved ESI guideline text.</td><td class="easy">The <b>explainer</b>: writes why the patient got this level, looking up the official guideline wording to back it up.</td></tr>
+  <tr><td><b>Coordinator</b></td><td>Writes the one-line queue summary. Its ESI, priority and shock fields must match the engine's exactly.</td><td class="easy">The <b>queue manager</b>: writes a one-line note for the waiting list, and must copy the engine's numbers exactly.</td></tr>
+</table>
+<table>
+  <thead><tr><th>What the system does</th><th class="r">What that means, in simple words</th></tr></thead>
+  <tr><td class="tech">The three run <b>sequentially</b>. The LLM is chosen by <code>llm_pool.py</code>, which probes NVIDIA models and ranks the live ones.</td>
+      <td class="easy">They work one after another like a relay. The app tests which AI models are working right now and uses the best one, like choosing the checkout lane that is open, so a model being switched off does not break the app.</td></tr>
+  <tr><td class="tech">In an earlier measurement, the language model restated the priority score correctly only <b>6.2%</b> of the time.</td>
+      <td class="easy">When tested, the AI copied the priority number correctly only about 6 times in 100, even when told to copy it. That is exactly why the numbers come from the rules engine, and the AI only writes the words.</td></tr>
+</table>
+
+<div class="final"><h2><span class="n">&#10003;</span>Putting it together, in eight plain points</h2>
+<ol class="sum">
+  <li>A webcam picture is reduced to a few numbers: the average colour of three skin patches (the forehead and both cheeks).</li>
+  <li>Blood flow makes that colour wobble with every heartbeat. A colour recipe (CHROM, with POS as a second opinion) cancels the lighting and keeps the wobble.</li>
+  <li>The strongest rhythm in the wobble is the heart rate; two models then vote on which rhythm is the real one, and their average is the answer.</li>
+  <li>Breathing changes the pulse's height and baseline slowly, and that slow wave gives the breathing rate, which is hidden ("--") whenever its two channels disagree.</li>
+  <li>The heart's beat-to-beat rhythm gives HRV and a stress score, and a quality score says how much to trust the signal.</li>
+  <li>A fixed rulebook, with no AI, turns heart rate, breathing and stress into an ESI level, a shock flag and a priority score.</li>
+  <li>Three AI helpers only explain that decision in words; they never change the numbers.</li>
+  <li>The patient is saved with a ticket number and shown in a queue sorted by urgency, ready for a nurse to call.</li>
+</ol></div>
+</body>
+</html>
