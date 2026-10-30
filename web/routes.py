@@ -157,6 +157,31 @@ def _face_box_payload():
             'w': round(w / fw, 3), 'h': round(h / fh, 3)}
 
 
+def _start_hr_ensemble(fps: float) -> None:
+    """(Re)start the per-session HR ensemble next to a freshly built rPPG engine. Caller holds processing_lock.
+    No-op (session.hr_ensemble = None) when the models are unavailable, so the old path runs unchanged."""
+    from core.hr_ensemble import HREnsembleSession
+    if web.session.hr_ensemble is not None:
+        web.session.hr_ensemble.close()
+        web.session.hr_ensemble = None
+    if getattr(web, 'hr_models', None) is None:
+        return
+    web.rppg_engine.capture_spectra = True     # adds `spectrum_wide` to results; nothing else about the output changes
+    web.session.hr_ensemble = HREnsembleSession(
+        web.hr_models, fps=int(round(fps)), window_size=max(300, int(fps * 10)), threaded=True, drop_when_full=True)
+
+
+def _ensemble_bpm(min_selector: int = 10):
+    """Current ensemble heart rate, or None while it is still warming up / unavailable / failed."""
+    ens = web.session.hr_ensemble
+    if ens is None:
+        return None
+    est = ens.estimate()
+    if est['error'] or est['bpm'] is None or est['n_selector'] < min_selector:
+        return None
+    return est['bpm']
+
+
 def generate_frames(clean: bool = False, pulse: bool = False):
     """MJPEG generator. Runs for the lifetime of the /video_feed request.
     clean=True streams frames without the debug face/ROI rectangles (kiosk)."""
@@ -170,6 +195,12 @@ def generate_frames(clean: bool = False, pulse: bool = False):
             print("[APP] Video ended — computing final summary")
             with web.session.processing_lock:
                 final = web.rppg_engine.get_final_summary()
+                if web.session.hr_ensemble is not None:
+                    web.session.hr_ensemble.finalize()
+                    ens_bpm = _ensemble_bpm(min_selector=3)
+                    if ens_bpm is not None:
+                        final['final_bpm_classical'] = final.get('final_bpm')
+                        final['final_bpm'] = round(ens_bpm, 1)
                 web.session.metrics.update(final)
                 web.session.metrics['status']       = 'VIDEO_ENDED'
                 web.session.metrics['classification'] = _classify(final.get('final_bpm'))
@@ -218,6 +249,8 @@ def generate_frames(clean: bool = False, pulse: bool = False):
 
             web.rppg_engine.add_frame(roi_data, elapsed)
             results = web.rppg_engine.process_ppg_signal()
+            if web.session.hr_ensemble is not None:
+                web.session.hr_ensemble.feed(roi_data, motion_delta, results)
 
             if results['ready']:
                 calibration_done = True
@@ -298,7 +331,11 @@ def generate_frames(clean: bool = False, pulse: bool = False):
                     _median_iqr_filtered(web.session.corrected_bpm_history)
                     if len(web.session.corrected_bpm_history) >= 3 else None
                 )
-                bpm_display = corrected_bpm_disp if corrected_bpm_disp is not None else avg_bpm_disp
+                ens_bpm_disp = _ensemble_bpm()
+                if ens_bpm_disp is not None:
+                    bpm_display = ens_bpm_disp
+                else:
+                    bpm_display = corrected_bpm_disp if corrected_bpm_disp is not None else avg_bpm_disp
 
                 rr_hist_live = list(getattr(web.rppg_engine, 'rr_history', []) or [])
                 # >=1, not >=3 — every entry in rr_history already
@@ -483,6 +520,7 @@ def _reset(source, live):
         # reason to assume it when we can just ask the device.
         source_fps = web.camera.get_source_fps(default=30.0)
         web.rppg_engine = AdvancedRPPG(fps=int(round(source_fps)), window_size=max(300, int(source_fps * 10)))
+        _start_hr_ensemble(source_fps)
         web.session.frame_count    = 0
         web.session.start_time     = time.time()
         web.session.is_live_camera = live
@@ -692,6 +730,7 @@ def scan_begin():
     with web.session.processing_lock:
         fps = web.camera.get_source_fps(default=30.0)
         web.rppg_engine = AdvancedRPPG(fps=int(round(fps)), window_size=max(300, int(fps * 10)))
+        _start_hr_ensemble(fps)
         web.session.frame_count = 0
         web.session.start_time = time.time()
         web.session.bpm_history = []

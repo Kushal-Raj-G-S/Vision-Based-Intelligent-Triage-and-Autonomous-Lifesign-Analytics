@@ -233,6 +233,11 @@ class SessionState:
     # actually validated (6.48 BPM MAE) rather than a different aggregation.
     corrected_bpm_history: list[float] = field(default_factory=list)
 
+    # Per-session HR ensemble (core/hr_ensemble.py: peak selector + spectro-temporal
+    # tracker). None when the model files are missing/disabled — every consumer
+    # then falls back to the classical/hybrid numbers above, exactly as before.
+    hr_ensemble: object = None
+
     # Persisted "last good" autonomic values (survive momentary signal loss)
     last_valid_hrv: float = 0.0
     last_valid_stress: float = 0.0
@@ -253,6 +258,9 @@ class SessionState:
         self.bpm_history.clear()
         self.triage_queue.clear()
         self.corrected_bpm_history.clear()
+        if self.hr_ensemble is not None:
+            self.hr_ensemble.close()
+            self.hr_ensemble = None
         self.last_valid_hrv = 0.0
         self.last_valid_stress = 0.0
         self.last_compiled_report = None
@@ -299,6 +307,15 @@ except Exception as exc:
         "Could not load hybrid correction model (%s) — live path stays classical-DSP-only: %s",
         CORRECTION_MODEL_PATH, exc,
     )
+
+# ── HR ensemble (peak selector + spectro-temporal tracker) ────────────────────
+# numpy-only models (models/hr_selector.npz, models/hr_tracker.npz). Out-of-fold on
+# 125 video sessions the mean of the two scored ~3.8-3.9 BPM MAE vs 4.5 for the hybrid
+# correction above (data/evolution/22-hr-ensemble-integration.md — video evidence, not
+# a live-webcam validation). None => hybrid/classical path, unchanged. Disable with
+# VITAL_HR_ENSEMBLE=0.
+from core.hr_ensemble import load_models as _load_hr_models  # noqa: E402
+hr_models = _load_hr_models()
 
 # ── Route Registration ────────────────────────────────────────────────────────
 # Import routes AFTER app, session, camera, and rppg_engine are defined so that

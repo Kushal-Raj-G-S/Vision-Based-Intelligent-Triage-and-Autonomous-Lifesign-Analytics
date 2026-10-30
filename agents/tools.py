@@ -90,6 +90,17 @@ def get_vitals_dict(video_path: str) -> dict:
             corrected_bpm = _median_iqr_filtered(corrected_history) if len(corrected_history) >= 3 else None
             final_bpm = corrected_bpm if corrected_bpm is not None else avg_bpm
 
+            # HR ensemble (peak selector + spectro-temporal tracker, core/hr_ensemble.py) takes priority when
+            # it has enough decisions; otherwise the hybrid/classical value above stands, as before.
+            ens_est = None
+            ens = getattr(web.session, 'hr_ensemble', None)
+            if ens is not None:
+                ens.flush(timeout=5.0)           # let the worker drain what the video loop already queued (stays alive)
+                e = ens.estimate()
+                if not e['error'] and e['bpm'] is not None and e['n_selector'] >= 10:
+                    ens_est = e
+                    final_bpm = e['bpm']
+
             # Respiratory rate gets the SAME session-level aggregation heart
             # rate already gets, and for the same reason. metrics['rr'] is the
             # latest single frame's estimate; feeding that to
@@ -110,6 +121,9 @@ def get_vitals_dict(video_path: str) -> dict:
                 'bpm': round(final_bpm, 1),
                 'bpm_classical': round(avg_bpm, 1),
                 'bpm_corrected': round(corrected_bpm, 1) if corrected_bpm is not None else None,
+                'bpm_ensemble': round(ens_est['bpm'], 1) if ens_est else None,
+                'bpm_selector': round(ens_est['selector'], 1) if ens_est and ens_est['selector'] is not None else None,
+                'bpm_tracker': round(ens_est['tracker'], 1) if ens_est and ens_est['tracker'] is not None else None,
                 'confidence': metrics.get('confidence', 0),
                 'sqi': metrics.get('sqi', metrics.get('confidence', 0)),
                 'stability': metrics.get('stability', 0),
@@ -134,7 +148,7 @@ def get_vitals_dict(video_path: str) -> dict:
     try:
         import web
         correction_path = web.CORRECTION_MODEL_PATH if web.correction_model is not None else None
-        results = analyze_video_complete(video_path, correction_model_path=correction_path)
+        results = analyze_video_complete(video_path, correction_model_path=correction_path, use_ensemble=True)
         # analyze_video_complete() only estimates bpm/confidence today — no
         # rr/hrv/stress_index for pre-recorded files yet (those currently
         # only exist in the live/session pipeline). Surface that honestly
@@ -150,6 +164,10 @@ def get_vitals_dict(video_path: str) -> dict:
         if results.get('final_bpm_corrected') is not None:
             results['bpm_classical'] = results.get('final_bpm_classical', results['bpm'])
             results['bpm'] = results['final_bpm_corrected']
+        # HR ensemble beats both when it produced an answer (core/hr_ensemble.py).
+        if results.get('final_bpm_ensemble') is not None:
+            results.setdefault('bpm_classical', results['bpm'])
+            results['bpm'] = results['final_bpm_ensemble']
         return results
     except Exception as e:
         return {

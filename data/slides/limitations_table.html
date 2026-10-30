@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Literature survey table</title>
+<style>
+  body { font-family: Calibri, "Segoe UI", Arial, sans-serif; margin: 24px; background: #ffffff; color: #1b1b1b; }
+  p.hint { font-size: 14px; color: #555; margin: 0 0 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 17px; }
+  th { background: #1c3560; color: #ffffff; text-align: left; padding: 10px 12px; border: 1px solid #1c3560; }
+  td { padding: 10px 12px; border: 1px solid #9aa3b2; vertical-align: top; }
+  td:first-child { font-weight: bold; width: 24%; }
+  tr:nth-child(even) td { background: #eef2f8; }
+</style>
+</head>
+<body>
+<p class="hint">Select the whole table below (click in it, press Ctrl+A), copy (Ctrl+C), then paste (Ctrl+V) into the PowerPoint slide. It arrives as a normal editable table.</p>
+<table>
+  <thead>
+    <tr><th>Existing work</th><th>Limitation / research gap</th><th>How VITAL addresses it</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Classical rPPG (edge and transit systems)</td>
+      <td>Tested mostly on one person in controlled scenes; little on breathing or skin tone</td>
+      <td>Heart rate and breathing from one webcam, checked on several public datasets</td>
+    </tr>
+    <tr>
+      <td>Deep-learning rPPG (e.g. DeepPhys)</td>
+      <td>Accuracy drops with head motion, occlusion and lighting; breathing barely validated</td>
+      <td>Signal-quality, motion and lighting checks, plus an ML correction trained and tested on separate people</td>
+    </tr>
+    <tr>
+      <td>Wearables, telehealth and sensor-fusion reviews</td>
+      <td>Wearables need compliance and raise privacy issues; fusion setups are hard to synchronise and calibrate</td>
+      <td>Contactless: one ordinary webcam, no wearable or extra sensor</td>
+    </tr>
+    <tr>
+      <td>AI triage tools and clinical-impact reviews</td>
+      <td>Few use contactless sensing; weak external validation, explainability and clinician trust</td>
+      <td>Standard ESI acuity from a rule engine, with explanations and a mandatory manual-review flag for shock</td>
+    </tr>
+    <tr>
+      <td>Multi-agent LLM and RL systems (decision support, mental health, hospital resources)</td>
+      <td>Text-only or simulated; not tested on live physiological signals; the LLM can invent numbers</td>
+      <td>Agents work on real measured vitals; the rule engine, not the LLM, sets priority</td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>

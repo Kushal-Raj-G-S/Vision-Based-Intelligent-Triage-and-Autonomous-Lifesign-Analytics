@@ -755,6 +755,11 @@ class AdvancedRPPG:
         # ── Filter state ──────────────────────────────────────────────
         # Seed filter (wide, used until first stable BPM is known)
         self._sos_seed = _safe_butter_sos(_BP_SEED_LOW, _BP_SEED_HIGH, fps)
+        # Research hook (scripts/build_hr_cache.py): when True, every result also carries `spectrum_wide`,
+        # the heart-rate-band spectrum of the signal filtered with the FIXED seed band — i.e. independent of
+        # the adaptive lock, which narrows around the current estimate and can filter the true rate out.
+        # Off by default: the returned dict is then bit-identical to before.
+        self.capture_spectra = False
         # Adaptive filter (recomputed each cycle once BPM estimate exists)
         self._sos_adaptive: Optional[np.ndarray] = None
         self._adaptive_low  = _BP_SEED_LOW
@@ -904,6 +909,8 @@ class AdvancedRPPG:
             ppg_raw = _project_chrom(r, g, b)
         else:
             ppg_raw = _project_pos(r, g, b, self.fps)
+
+        spectrum_wide = self._wide_spectrum(ppg_raw) if self.capture_spectra else None
 
         # ── Step 3: bandpass filter ───────────────────────────────────
         sos = self._sos_adaptive if self._sos_adaptive is not None else self._sos_seed
@@ -1102,7 +1109,7 @@ class AdvancedRPPG:
         # ── Step 10: HRV + stress index ───────────────────────────────
         hrv, stress_index = self._compute_hrv_stress(ppg_filtered, composite_sqi)
 
-        return {
+        result = {
             "bpm":                  float(bpm),
             "confidence":           float(composite_sqi),
             "status":               status,
@@ -1123,6 +1130,23 @@ class AdvancedRPPG:
             "ready":                True,
             "ppg_signal":           ppg_filtered.tolist(),
         }
+        if spectrum_wide is not None:
+            result["spectrum_wide"] = spectrum_wide
+        return result
+
+    def _wide_spectrum(self, ppg_raw: np.ndarray):
+        """Lock-independent heart-rate spectrum on a fixed grid (0.70-3.00 Hz, 0.02 Hz step), normalised to
+        unit total power so it is scale-free. Returns float32 array or None. Research use only."""
+        try:
+            sos = self._sos_seed
+            x = signal.sosfiltfilt(sos, ppg_raw) if sos is not None else ppg_raw
+            f, p = signal.welch(x, fs=self.fps, window="hann", nperseg=len(x), noverlap=0, nfft=4096)
+            grid = np.arange(0.70, 3.0001, 0.02)
+            q = np.interp(grid, f, p)
+            tot = float(q.sum())
+            return (q / tot).astype(np.float32) if tot > 0 else None
+        except Exception:
+            return None
 
     # ── BPM lock/candidate resolver (harmonic-ambiguity debounce) ─────────────
 

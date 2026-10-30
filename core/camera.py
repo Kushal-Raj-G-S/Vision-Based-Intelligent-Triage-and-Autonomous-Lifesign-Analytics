@@ -252,6 +252,10 @@ class Camera:
         # "move closer / left / right" guidance; display-only, never feeds the
         # rPPG signal.
         self.last_face_box: Optional[tuple] = None
+        # Research hook (scripts/build_roi_cache.py). When True, _extract_roi_mediapipe also stores per-ROI colour
+        # means (as used, and before the debug outline is drawn) in `last_roi_parts`. Off = zero extra work.
+        self.record_roi_parts = False
+        self.last_roi_parts: Optional[dict] = None
 
         # Landmark-based motion tracking (MediaPipe mode)
         self._prev_cx: Optional[float] = None
@@ -567,6 +571,11 @@ class Camera:
         if fh_roi.size == 0 or lc_roi.size == 0 or rc_roi.size == 0:
             return None, None, motion_delta
 
+        if self.record_roi_parts:
+            # means BEFORE the overlay below draws its outline on the ROI border (the production values are
+            # taken after it); recorded so a replay can test whether the outline matters
+            _clean = (_robust_channel_means(fh_roi), _robust_channel_means(lc_roi), _robust_channel_means(rc_roi))
+            _mouth = abs(lm[14].y - lm[13].y) * h / max(iod, 1)       # inner-lip gap / inter-ocular distance
         # ── Visual overlay ────────────────────────────────────────────
         cv2.rectangle(frame, (fh_x1, fh_y1), (fh_x2, fh_y2), (255, 80, 0), 2)
         cv2.rectangle(frame, (lc_x1, lc_y1), (lc_x2, lc_y2), (0, 220, 220), 2)
@@ -603,6 +612,13 @@ class Camera:
         g = w_fh * fh_bgr[1] + w_lc * lc_bgr[1] + w_rc * rc_bgr[1]
         r = w_fh * fh_bgr[2] + w_lc * lc_bgr[2] + w_rc * rc_bgr[2]
 
+        if self.record_roi_parts:
+            self.last_roi_parts = {
+                "prod": (fh_bgr, lc_bgr, rc_bgr), "clean": _clean, "mouth_open": float(_mouth),
+                "iod": float(iod), "norm_iod": float(norm_iod),
+                "box": (min(all_x), min(all_y), max(all_x), max(all_y)),
+                "turned": (bool(face_turned_left), bool(face_turned_right)),
+            }
         return (r, g, b), fh_roi, motion_delta
 
     # ── Haar fallback ─────────────────────────────────────────────────────────
@@ -654,6 +670,16 @@ class Camera:
             lc_x, lc_y, lc_w, lc_h = _roi(0.15, 0.45, 0.30, 0.20)
             rc_x, rc_y, rc_w, rc_h = _roi(0.55, 0.45, 0.30, 0.20)
 
+            _clean = None
+            if self.record_roi_parts:
+                # research hook: colour means BEFORE the debug outlines below are drawn onto the ROI borders
+                try:
+                    _clean = (_robust_channel_means(frame[fh_y:fh_y + fh_h, fh_x:fh_x + fh_w]),
+                              _robust_channel_means(frame[lc_y:lc_y + lc_h, lc_x:lc_x + lc_w]),
+                              _robust_channel_means(frame[rc_y:rc_y + rc_h, rc_x:rc_x + rc_w]))
+                except Exception:
+                    _clean = None
+
             cv2.rectangle(frame, (sx, sy), (sx + sw, sy + sh), (0, 255, 0), 1)
             cv2.rectangle(frame, (fh_x, fh_y), (fh_x + fh_w, fh_y + fh_h), (255, 80, 0), 2)
             cv2.rectangle(frame, (lc_x, lc_y), (lc_x + lc_w, lc_y + lc_h), (0, 220, 220), 2)
@@ -681,6 +707,10 @@ class Camera:
             g = w_fh * fh_bgr[1] + w_lc * lc_bgr[1] + w_rc * rc_bgr[1]
             r = w_fh * fh_bgr[2] + w_lc * lc_bgr[2] + w_rc * rc_bgr[2]
 
+            if self.record_roi_parts and _clean is not None:
+                self.last_roi_parts = {"prod": (fh_bgr, lc_bgr, rc_bgr), "clean": _clean, "mouth_open": float("nan"),
+                                       "iod": float("nan"), "norm_iod": float("nan"),
+                                       "box": (sx, sy, sx + sw, sy + sh), "turned": (False, False)}
             return (r, g, b), fh_roi, motion_delta
 
         except Exception as exc:

@@ -54,6 +54,9 @@ compute a number that drives real triage priority.
 | Local GPU speech-to-text for the kiosk (separate env) | `tools/gpu_lab/stt_server.py` |
 | Self-healing NVIDIA model selection (crew + ARIA chat) | `agents/llm_pool.py` |
 | Design tokens (single white + orange theme) + dashboard skin | `frontend/src/app/globals.css` |
+| HR research lab: session discovery + cleaned ground truth | `scripts/hr_data.py` (125 sessions under `dataset/hr/`) |
+| HR lab: one-time face-tracking cache, replay, features | `scripts/build_roi_cache.py`, `scripts/hr_replay.py`, `scripts/hr_lab_build.py` (cache in `dataset/cache/`) |
+| HR lab: evaluation, peak selector, follow-ups, report | `scripts/hr_lab.py`, `scripts/hr_peaks.py`, `scripts/hr_more.py`, `scripts/hr_report.py` -> `dataset/cache/HR_RESULTS.md` |
 
 ## Known-good vs. known-fragile (read before touching)
 
@@ -115,6 +118,30 @@ Full build story, measurements and the NOT-verified list: `data/evolution/20-voi
 - **Restart servers by killing the old process first** (look up `app.py` via `Get-CimInstance Win32_Process`) — stray duplicates on port 5002 caused inconsistent behaviour.
 - **Theme**: ONE theme only, warm white + orange (user decision, no dark mode, no toggle). Colours live in the `:root` tokens in `globals.css`; each vital has a fixed signal colour (`--sig-hr` green, `--sig-rr` orange, `--sig-stress` pink, `--sig-sqi` blue). The dashboard's hard-coded Tailwind colours are remapped by the `.vital-app` layer there — to change the look, change tokens; don't re-add per-component colours or a second theme. The Vitals monitor is `components/BedsideMonitor.tsx` + `.bm-*` styles (alarm limits there mirror `core/clinical.py` — keep in sync). Don't put a `filter: blur()` on the animated full-screen background layer: it made every frame repaint and stalled rendering. `frontend/src/app/page.tsx` has **CRLF** line endings: normalise `\r\n` before multi-line scripted edits or they silently fail to match.
 - **Pediatric thresholds (done 2026-10-30):** `core/clinical.py::assess(age_years=...)` picks HR/RR limits from `AGE_BANDS` (tachycardia/tachypnea = ESI v4 danger-zone vitals; bradycardia = PALS normal-awake lower bounds). `age_years=None` = adult limits, so the dashboard and offline scripts are unchanged — verified bit-identical over a 1,620-case adult grid. The kiosk passes its recorded age through `triage_run`. **Every patient under 18 gets `needs_manual_review=True`**: the camera has never been validated on children, and for infants the danger limits (HR >180, RR >50) are at or above what the DSP can report (`MEASURABLE_HR_MAX`/`MEASURABLE_RR_MAX`, from `_BP_HIGH_CEIL` and `_RR_BAND_HI_CAP_HZ`). If you widen those DSP ceilings, update the two constants too.
+
+## HR research lab (Era 21) — read `data/evolution/21-hr-data-audit-and-plan.md` first
+
+- **The face tracker in use is the Haar cascade, NOT MediaPipe** (found 2026-10-30). mediapipe 1.0.1 (installed
+  2026-08-15) removed `mp.solutions`; `core/camera.py` detects that and falls back to Haar with only an INFO log.
+  All 125 cached sessions — and, since the replay reproduces them exactly, the 71-session 9.43 / 6.48 results — were
+  produced with Haar ROIs. Haar finds the face in only 6-54% of frames on several of the worst-error sessions
+  (ph_s11_T2 5.9%, ph_s9_T3 33.5%, ph_s33_T3 36.2%, d2_subject15 53.9%). Do not describe the deployed ROI extraction as
+  "MediaPipe face mesh". `scripts/tasks_face_mesh.py` adapts the new MediaPipe Tasks FaceLandmarker to the old
+  interface so the camera's ORIGINAL landmark ROI code runs unchanged; it needs `dataset/models/face_landmarker.task`.
+  `dataset/cache/run_mp.sh` re-tracks all sessions with it and writes `HR_RESULTS_MP.md` + `TRACKER_COMPARISON.md`.
+
+- **Ground truth for UBFC-rPPG was partly corrupted**: the oximeter HR column has dropouts (0 / 7 BPM readings) and
+  the old session truth was its MEAN. `hr_data.reference_info()` uses the median of valid (40-180) readings and flags
+  sessions with >10% impossible readings. The rule uses the reference device only, never our estimates. Always report
+  original AND cleaned labels.
+- **Cache first, then replay.** Face tracking is ~all the cost (5 min per 3-min UBFC-Phys clip); `hr_replay.py` reproduces
+  the old classical results exactly from the cache. New ideas are tested by replay in minutes, never by re-tracking.
+- **Peak selector (`hr_peaks.py`)**: chooses among real spectral peaks of CHROM and POS (lock-independent spectra via
+  `AdvancedRPPG.capture_spectra`, off by default) instead of regressing a value, so it cannot shrink toward the mean.
+  Evaluated out-of-fold by subject. As of Era 22 it IS wired into the app, as half of the `core/hr_ensemble.py` selector+tracker mean (numpy-only models in `models/hr_*.npz`; `VITAL_HR_ENSEMBLE=0` disables; ~3.8-3.9 BPM out-of-fold on video, pair picked post hoc, NOT live-webcam validated — read `data/evolution/22-hr-ensemble-integration.md` before quoting a number). Do not claim it generalises until the cross-dataset rows
+  in `HR_RESULTS.md` pass (the RR learned re-ranker passed within-source CV and failed across sources).
+- `AdvancedRPPG.capture_spectra` and `Camera.record_roi_parts` are research hooks, default off; verified the synthetic
+  check is unchanged (HR 0.29/0.53, RR 4.44) and BIDMC RR unchanged (0.96 / 0.39).
 
 ## A note on trusting changes in this repo
 

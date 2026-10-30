@@ -62,7 +62,8 @@ def _median_iqr_filtered(values):
     return statistics.median(filtered)
 
 
-def analyze_video_complete(video_path, process_stride: int = 1, correction_model_path: str = None):
+def analyze_video_complete(video_path, process_stride: int = 1, correction_model_path: str = None,
+                           use_ensemble: bool = False):
     """
     Analyze complete video and return final results
 
@@ -121,6 +122,17 @@ def analyze_video_complete(video_path, process_stride: int = 1, correction_model
 
     video_fps = camera.get_source_fps(default=30.0)
     rppg = AdvancedRPPG(fps=int(round(video_fps)), window_size=max(300, int(video_fps * 10)))
+
+    # HR ensemble (core/hr_ensemble.py): reported alongside, never in place of, 'bpm'. Opt-in so every validation script
+    # keeps its exact old behaviour; agents/tools.py turns it on for the product path. Needs every frame (stride 1).
+    ensemble = None
+    if use_ensemble and process_stride == 1:
+        from core.hr_ensemble import HREnsembleSession, load_models
+        hr_models = load_models()
+        if hr_models is not None:
+            rppg.capture_spectra = True
+            ensemble = HREnsembleSession(hr_models, int(round(video_fps)), max(300, int(video_fps * 10)),
+                                         threaded=True, drop_when_full=False)
     print(f"Detected source FPS: {video_fps:.2f}")
 
     frame_count = 0
@@ -163,6 +175,8 @@ def analyze_video_complete(video_path, process_stride: int = 1, correction_model
 
             # Process with the configured projection algorithm (CHROM/POS)
             result = rppg.process_ppg_signal()
+            if ensemble is not None:
+                ensemble.feed((avg_r, avg_g, avg_b), motion_delta, result)
 
             if result['ready'] and result['bpm'] > 0:
                 # Capture the FULL vitals set, not just bpm/confidence — rr,
@@ -304,8 +318,17 @@ def analyze_video_complete(video_path, process_stride: int = 1, correction_model
             )
             result_dict['corrected_readings_count'] = len(corrected_readings)
 
+        if ensemble is not None:
+            ensemble.finalize()
+            est = ensemble.estimate()
+            if est['bpm'] is not None and not est['error'] and est['n_selector'] >= 3:
+                result_dict['final_bpm_ensemble'] = round(est['bpm'], 1)
+                result_dict['bpm_selector'] = None if est['selector'] is None else round(est['selector'], 1)
+                result_dict['bpm_tracker'] = None if est['tracker'] is None else round(est['tracker'], 1)
         return result_dict
     else:
+        if ensemble is not None:
+            ensemble.close()
         return {
             'success': False,
             'error': 'No valid BPM readings detected',
