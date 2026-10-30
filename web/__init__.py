@@ -238,6 +238,11 @@ class SessionState:
     # then falls back to the classical/hybrid numbers above, exactly as before.
     hr_ensemble: object = None
 
+    # Live camera only: resamples real (timestamped) frames onto a uniform 30 Hz grid so the DSP's fixed-fps
+    # assumption holds whatever frame rate the webcam really delivers (core/live_resampler.py). None for files.
+    live_resampler: object = None
+    last_dsp: object = None
+
     # Persisted "last good" autonomic values (survive momentary signal loss)
     last_valid_hrv: float = 0.0
     last_valid_stress: float = 0.0
@@ -261,6 +266,8 @@ class SessionState:
         if self.hr_ensemble is not None:
             self.hr_ensemble.close()
             self.hr_ensemble = None
+        self.live_resampler = None
+        self.last_dsp = None
         self.last_valid_hrv = 0.0
         self.last_valid_stress = 0.0
         self.last_compiled_report = None

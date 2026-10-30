@@ -171,6 +171,44 @@ def _start_hr_ensemble(fps: float) -> None:
         web.hr_models, fps=int(round(fps)), window_size=max(300, int(fps * 10)), threaded=True, drop_when_full=True)
 
 
+LIVE_DSP_FS = 30.0     # rate the DSP runs at for a live camera (what every validated number was measured at)
+
+
+def _start_live_resampler(live: bool) -> None:
+    """Live camera: resample real frames onto a uniform LIVE_DSP_FS grid (core/live_resampler.py). Files: none."""
+    from core.live_resampler import UniformResampler
+    web.session.live_resampler = UniformResampler(LIVE_DSP_FS) if live else None
+    web.session.last_dsp = None
+
+
+def _run_dsp(roi_data, motion_delta, elapsed):
+    """Feed one camera frame to the DSP and return the latest process_ppg_signal() dict.
+
+    File sources are unchanged: one sample per frame at the file's own frame rate. A live camera is resampled by
+    timestamp so the engine's fixed-fps assumption holds at ANY real frame rate; a frame that completes no new grid
+    sample (camera faster than the grid) returns the previous result flagged '_stale' so nothing is double-counted."""
+    rs = web.session.live_resampler
+    ens = web.session.hr_ensemble
+    if rs is None or roi_data is None:
+        web.rppg_engine.add_frame(roi_data, elapsed)
+        res = web.rppg_engine.process_ppg_signal()
+        if ens is not None:
+            ens.feed(roi_data, motion_delta, res)
+        web.session.last_dsp = res
+        return res
+    res = None
+    for rgb, mot in rs.push(time.perf_counter(), roi_data, motion_delta):
+        web.rppg_engine.add_frame(rgb, elapsed)
+        res = web.rppg_engine.process_ppg_signal()
+        if ens is not None:
+            ens.feed(rgb, mot, res)
+    if res is None:
+        prev = web.session.last_dsp
+        return dict(prev, _stale=True) if prev else {'ready': False, '_stale': True}
+    web.session.last_dsp = res
+    return res
+
+
 def _ensemble_bpm(min_selector: int = 10):
     """Current ensemble heart rate, or None while it is still warming up / unavailable / failed."""
     ens = web.session.hr_ensemble
@@ -212,6 +250,12 @@ def generate_frames(clean: bool = False, pulse: bool = False):
         with web.session.processing_lock:
             web.session.frame_count += 1
             elapsed = time.time() - web.session.start_time
+            if web.session.frame_count % 300 == 0 and elapsed > 0:      # logging only
+                import logging
+                rs_ = web.session.live_resampler
+                logging.getLogger('vital').info('[LIVE] %d frames in %.0f s = %.1f fps from the camera; DSP runs at %s Hz%s',
+                                                web.session.frame_count, elapsed, web.session.frame_count / elapsed, web.rppg_engine.fps,
+                                                ' (uniform resample)' if rs_ is not None else '')
 
             # Perceptual luminance (ITU-R BT.601) — accurate pseudo-lux
             if roi_data is not None:
@@ -247,12 +291,11 @@ def generate_frames(clean: bool = False, pulse: bool = False):
             if roi_data is not None and (lux < 50 or lux > 210):
                 warnings.append("Poor lighting — move to better light")
 
-            web.rppg_engine.add_frame(roi_data, elapsed)
-            results = web.rppg_engine.process_ppg_signal()
-            if web.session.hr_ensemble is not None:
-                web.session.hr_ensemble.feed(roi_data, motion_delta, results)
+            results = _run_dsp(roi_data, motion_delta, elapsed)
 
-            if results['ready']:
+            if results.get('_stale'):
+                pass                      # no new uniform-grid sample this frame: keep the previous reading, add nothing
+            elif results['ready']:
                 calibration_done = True
                 bpm = results.get('bpm', 0)
                 if isinstance(bpm, (int, float)) and bpm > 0:
@@ -400,7 +443,8 @@ def generate_frames(clean: bool = False, pulse: bool = False):
                 web.session.metrics['rr_classification'] = _classify_respiratory_rate(results.get('rr', 0))
 
         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-        time.sleep(0.02)
+        # A live camera read already blocks until the next frame, so the extra 20 ms only lowers the real frame rate.
+        time.sleep(0.0 if web.session.is_live_camera else 0.02)
 
 
 # ── App Routes ───────────────────────────────────────────────────────
@@ -519,8 +563,13 @@ def _reset(source, live):
         # webcams usually do negotiate close to 30fps, but there's no
         # reason to assume it when we can just ask the device.
         source_fps = web.camera.get_source_fps(default=30.0)
+        if live:
+            # A webcam's driver-reported fps is nominal; its real delivery rate varies (measured 9.6-11.5 fps here).
+            # The DSP runs on a uniform LIVE_DSP_FS resample of the timestamped frames instead (see _run_dsp).
+            source_fps = LIVE_DSP_FS
         web.rppg_engine = AdvancedRPPG(fps=int(round(source_fps)), window_size=max(300, int(source_fps * 10)))
         _start_hr_ensemble(source_fps)
+        _start_live_resampler(live)
         web.session.frame_count    = 0
         web.session.start_time     = time.time()
         web.session.is_live_camera = live
@@ -729,8 +778,12 @@ def scan_begin():
         return jsonify({'success': False, 'error': 'Camera is not running.'}), 409
     with web.session.processing_lock:
         fps = web.camera.get_source_fps(default=30.0)
+        live_cam = bool(web.session.is_live_camera)
+        if live_cam:
+            fps = LIVE_DSP_FS            # see _run_dsp: live frames are resampled onto a uniform grid
         web.rppg_engine = AdvancedRPPG(fps=int(round(fps)), window_size=max(300, int(fps * 10)))
         _start_hr_ensemble(fps)
+        _start_live_resampler(live_cam)
         web.session.frame_count = 0
         web.session.start_time = time.time()
         web.session.bpm_history = []

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Implementation</title>
+<style>
+  :root {
+    --navy: #14284b; --ink: #1d2b44; --grey: #5b6b85; --line: #c9d3e6;
+    --panel: #e8eef9; --card: #ffffff; --orange: #f26b1d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; background: #fff; }
+  body { font-family: "Segoe UI", "Inter", Arial, sans-serif; color: var(--ink); position: relative; overflow: hidden; }
+
+  .title { position: absolute; left: 64px; top: 34px; font-size: 62px; font-weight: 800; color: var(--navy); letter-spacing: -0.5px; }
+  .sub { position: absolute; left: 66px; top: 112px; font-size: 27px; color: var(--grey); }
+
+  .stack { position: absolute; left: 64px; top: 170px; width: 1330px; }
+  .layer { display: flex; align-items: stretch; background: var(--panel); border: 2px solid var(--line); border-radius: 18px; padding: 14px 16px 14px 0; }
+  .tag { width: 150px; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+  .tag b { background: var(--navy); color: #fff; font-size: 15px; letter-spacing: 1.5px; padding: 6px 14px; border-radius: 999px; font-weight: 700; }
+  .tag span { font-size: 19px; color: var(--ink); text-align: center; line-height: 1.15; }
+  .body { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 8px; min-width: 0; }
+  .row { display: flex; gap: 12px; }
+  .card { flex: 1; background: var(--card); border: 2px solid var(--line); border-radius: 14px; padding: 12px 14px; text-align: center;
+          box-shadow: 0 2px 6px rgba(20,40,75,.10); display: flex; flex-direction: column; justify-content: center; gap: 5px; min-width: 0; }
+  .card h3 { font-size: 25px; font-weight: 700; color: var(--navy); line-height: 1.1; }
+  .card p { font-size: 16.5px; color: var(--grey); line-height: 1.28; }
+  .card.hot { background: var(--orange); border-color: #d95a10; }
+  .card.hot h3, .card.hot p { color: #fff; }
+  .stackline { text-align: center; font-size: 17px; color: var(--grey); }
+
+  .arrow { height: 46px; display: flex; align-items: center; justify-content: center; gap: 14px; font-size: 17px; color: var(--grey); }
+  .arrow svg { width: 22px; height: 40px; flex: none; }
+  .h1 { height: 118px } .h2 { height: 104px } .h3 { height: 198px } .h4 { height: 126px } .h5 { height: 108px }
+
+  .frames { position: absolute; left: 1440px; top: 170px; width: 420px; }
+  .frame { height: 322px; border: 3px solid var(--navy); border-radius: 22px; background: #fff; }
+  .cap { text-align: center; font-size: 22px; color: var(--ink); margin: 12px 0 0; }
+  .frame2 { margin-top: 70px; }
+
+  .foot { position: absolute; left: 66px; top: 1036px; font-size: 19px; color: var(--grey); }
+</style>
+</head>
+<body>
+  <div class="title">Implementation</div>
+  <div class="sub">VITAL: contactless vitals triage from a webcam</div>
+
+  <div class="stack">
+    <div class="layer h1">
+      <div class="tag"><b>LAYER 1</b><span>Frontend</span></div>
+      <div class="body">
+        <div class="row">
+          <div class="card"><h3>Vitals Monitor</h3></div>
+          <div class="card"><h3>Triage Dispatch</h3></div>
+          <div class="card"><h3>Clinical Crew</h3></div>
+          <div class="card"><h3>ARIA Assistant</h3></div>
+        </div>
+        <div class="stackline">Next.js 16, React, TypeScript, Tailwind CSS</div>
+      </div>
+    </div>
+
+    <div class="arrow"><svg viewBox="0 0 22 40"><path d="M11 2 V32 M3 24 L11 34 L19 24" fill="none" stroke="#14284b" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>MJPEG stream + JSON over HTTP</div>
+
+    <div class="layer h2">
+      <div class="tag"><b>LAYER 2</b><span>API</span></div>
+      <div class="body">
+        <div class="row"><div class="card"><h3>Flask REST API</h3><p>video feed, vitals, triage run, queue, session state, CORS</p></div></div>
+      </div>
+    </div>
+
+    <div class="arrow"><svg viewBox="0 0 22 40"><path d="M11 2 V32 M3 24 L11 34 L19 24" fill="none" stroke="#14284b" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>ROI colour per frame (R, G, B) at 30 fps</div>
+
+    <div class="layer h3">
+      <div class="tag"><b>LAYER 3</b><span>Processing<br>modules</span></div>
+      <div class="body">
+        <div class="row" style="height:100%">
+          <div class="card"><h3>Camera and ROI</h3><p>OpenCV face detection, forehead + cheek ROIs, motion gate</p></div>
+          <div class="card"><h3>rPPG Engine</h3><p>CHROM + POS, adaptive band-pass, Welch spectrum, SQI</p></div>
+          <div class="card"><h3>Respiration and HRV</h3><p>amplitude + baseline modulation, cubic spline, RMSSD</p></div>
+          <div class="card"><h3>HR Ensemble</h3><p>peak selector + conv-net tracker, numpy inference</p></div>
+          <div class="card hot"><h3>Clinical Rule Engine</h3><p>ESI level, Compensated Shock flag, priority score, age-based limits</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow"><svg viewBox="0 0 22 40"><path d="M11 2 V32 M3 24 L11 34 L19 24" fill="none" stroke="#14284b" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>HR, RR, HRV, SQI, ESI, shock flag</div>
+
+    <div class="layer h4">
+      <div class="tag"><b>LAYER 4</b><span>AI layer</span></div>
+      <div class="body">
+        <div class="row">
+          <div class="card"><h3>CrewAI Agents</h3><p>Perception, Diagnostic, Coordinator: explain the result, never compute it</p></div>
+          <div class="card"><h3>NVIDIA LLM Pool</h3><p>self-healing model selection, deterministic fallback text</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow"><svg viewBox="0 0 22 40"><path d="M11 2 V32 M3 24 L11 34 L19 24" fill="none" stroke="#14284b" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>triage record + narrative</div>
+
+    <div class="layer h5">
+      <div class="tag"><b>LAYER 5</b><span>Data</span></div>
+      <div class="body">
+        <div class="row">
+          <div class="card"><h3>PostgreSQL (Neon)</h3><p>patient records, token queue, connection pool</p></div>
+          <div class="card"><h3>Public datasets</h3><p>UBFC-rPPG, UBFC-Phys, BIDMC, CapnoBase, VitalDB</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frames">
+    <div class="frame"></div>
+    <div class="cap">Live vitals monitor</div>
+    <div class="frame frame2"></div>
+    <div class="cap">Triage queue and AI summary</div>
+  </div>
+
+  <div class="foot">Python, NumPy, SciPy, scikit-learn, PyTorch (training only)</div>
+</body>
+</html>

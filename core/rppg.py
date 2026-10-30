@@ -40,6 +40,7 @@ Pai, A. et al. (2021). HRVCam: SNR-based adaptive bandpass for rPPG HRV.
 from __future__ import annotations
 
 import logging
+import time
 import statistics
 from collections import deque
 from enum import Enum
@@ -1563,6 +1564,13 @@ class AdvancedRPPG:
             return k_half
         return k
 
+    def _rr_diag(self, msg: str) -> None:
+        """Logging only (no effect on any output): why RR is not available yet, at most once per 5 s."""
+        now = time.time()
+        if now - getattr(self, "_rr_diag_t", 0.0) >= 5.0:
+            self._rr_diag_t = now
+            log.info("RR not ready: %s", msg)
+
     def _estimate_rr(self, ppg_long: Optional[np.ndarray] = None) -> tuple[float, float]:
         """
         Estimate respiratory rate by fusing respiratory-induced variations
@@ -1595,6 +1603,7 @@ class AdvancedRPPG:
         if ppg_long is None:
             need = int(self.fps * _RR_MIN_WINDOW_SEC)
             if len(self.r_buffer) < need:
+                self._rr_diag(f"buffer {len(self.r_buffer)}/{need} samples (assumed fps={self.fps})")
                 return 0.0, 0.0
             take = int(self.fps * _RR_WINDOW_SEC)
             r = np.array(list(self.r_buffer)[-take:])
@@ -1611,6 +1620,7 @@ class AdvancedRPPG:
         try:
             got = self._extract_rivs(ppg_long)
             if got is None:
+                self._rr_diag(f"too few clean beats in the {len(ppg_long)}-sample window (assumed fps={self.fps}, hr_lock={self.prev_bpm})")
                 return 0.0, 0.0
             t, riav, riiv, rifv = got   # rifv (RSA) is extracted but NOT fused — see below
 
@@ -1648,6 +1658,7 @@ class AdvancedRPPG:
                     cands.append(rr)
                     concs.append(conc)
             if not cands:
+                self._rr_diag("no respiratory peak found in either channel")
                 return 0.0, 0.0
 
             cands = np.asarray(cands)

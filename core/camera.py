@@ -311,6 +311,10 @@ class Camera:
                 else cv2.VideoCapture(source)
             )
             if cap.isOpened():
+                if isinstance(source, int):
+                    # Live camera: keep the driver queue at one frame so a slow processing loop reads the NEWEST frame,
+                    # not a backlog (a backlog makes read-time timestamps lag capture time; see core/live_resampler.py).
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 ret, frame = cap.read()
                 if ret and frame is not None:
                     log.info("Successfully opened source: %s", source)

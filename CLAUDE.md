@@ -143,6 +143,18 @@ Full build story, measurements and the NOT-verified list: `data/evolution/20-voi
 - `AdvancedRPPG.capture_spectra` and `Camera.record_roi_parts` are research hooks, default off; verified the synthetic
   check is unchanged (HR 0.29/0.53, RR 4.44) and BIDMC RR unchanged (0.96 / 0.39).
 
+## Live webcam (Era 23) — read `data/evolution/23-live-webcam-fps-and-rr.md`
+
+- **The DSP assumes one fixed fps and ignores timestamps.** A webcam's driver-reported fps is nominal (here -1 -> 30) and the real loop rate
+  was 9.6-11.5 fps, which scaled every frequency by 3x and starved RR. Live frames now go through `core/live_resampler.UniformResampler`
+  (`web/routes.py::_run_dsp`) onto a uniform 30 Hz grid; files are unchanged. Verified offline at 6-120 fps (`scripts/test_live_resampler.py`),
+  NOT yet on a long live run. Do not feed live frames straight into `AdvancedRPPG`, and don't let several browser tabs pull `/video_feed`
+  while testing — they share one `Camera` and corrupt each other.
+- **Live RR is still wrong (counted ~22, app showed 7 at 1% confidence).** RIIV locks on exposure drift near the band floor and early
+  coincident readings stay in `rr_history` forever. Unfixed on purpose (one counted session cannot validate a tuning). Claim respiration
+  on recorded data only (BIDMC / CapnoBase / VitalDB), never on a live webcam.
+- `core/hr_ensemble.py` (Era 22) is wired into the app; `VITAL_HR_ENSEMBLE=0` disables it. `scripts/test_hr_ensemble.py` checks parity.
+
 ## A note on trusting changes in this repo
 
 Mid-session, the BPM lock/candidate hysteresis fix above was implemented, and its *first* version silently regressed two previously-correct synthetic cases (introduced a same-value streak-counter design that was too fragile against ordinary FFT-bin jitter). It was caught immediately by re-running `scripts/validate_dataset.py` after the change, not by inspection. **The lesson: re-run the validation harness after any change to `core/rppg.py` or `core/clinical.py`, every time, before considering a change safe.** A change being reviewed and appearing reasonable is not the same as it being verified.
