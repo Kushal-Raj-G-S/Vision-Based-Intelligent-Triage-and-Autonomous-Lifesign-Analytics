@@ -1,0 +1,11 @@
+STAGE 3 - Welch frequency spectrum of the band-passed pulse (116 bins, 42-180 BPM)
+
+window ending t=28.7s  CHROM top peaks (BPM, relative power): 102 (1.00), 140 (0.20), 164 (0.07)
+window ending t=28.7s  POS   top peaks (BPM, relative power): 91 (1.00), 67 (0.91), 102 (0.67)
+window ending t=40.7s  CHROM top peaks (BPM, relative power): 100 (1.00), 59 (0.98), 126 (0.89)
+window ending t=40.7s  POS   top peaks (BPM, relative power): 130 (1.00), 168 (0.35), 98 (0.31)
+window ending t=52.2s  CHROM top peaks (BPM, relative power): 96 (1.00), 114 (0.11), 166 (0.10)
+window ending t=52.2s  POS   top peaks (BPM, relative power): 96 (1.00), 114 (0.16), 166 (0.11)
+
+Reading it: the strongest peak is the pulse rate. A smaller peak at about half or double that rate is a harmonic - the
+classic cause of wrong readings, and the reason stage 4 chooses between peaks instead of just taking the tallest.

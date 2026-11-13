@@ -1,0 +1,23 @@
+STAGE 1 - which colour carries the pulse?
+
+video: C:/Users/M.Manoj/Downloads/test.avi
+frame rate 29.66 fps | 1549 frames | face found in 1549 (100%)
+
+Per colour channel (all three skin patches pooled; forehead 50%, each cheek 25%):
+channel   level (DC)  pulse size (AC)   AC/DC %  pulse SNR dB
+R             144.15           0.8530     0.592          15.4
+G             121.40           0.6640     0.547          15.8
+B             121.79           0.6853     0.563          15.7
+
+=> Best signal-to-noise: G.  Largest relative pulse size (AC/DC): R.
+   In THIS clip the three channels pulse almost equally (SNR spread only 0.5 dB) and their pulsating parts are
+   about 99% correlated: nearly all of the wobble is COMMON to R, G and B (the pulse itself plus any brightness change
+   from motion or lighting; this table cannot separate the two). CHROM and POS (stage 2) combine the channels to cancel
+   the lighting/motion part and keep the pulse. (Literature: green usually carries the strongest pulse because haemoglobin absorbs green
+   light; this clip shows no clear winner, so no channel is singled out here.)
+
+Per skin patch (green channel). AC/DC includes noise, so compare it with the SNR column:
+patch          AC/DC %  pulse SNR dB
+forehead         1.601          16.5
+left cheek       0.194          16.2
+right cheek      0.180          14.6

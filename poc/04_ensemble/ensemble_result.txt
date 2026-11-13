@@ -1,0 +1,18 @@
+STAGE 4 - final heart rate and where it came from
+
+video: C:/Users/M.Manoj/Downloads/test.avi
+
+classical CHROM only (no models)     : 100.0 BPM
+classical POS only (no models)       : 77.0 BPM
+peak selector (median of its picks)   : 99.6 BPM
+spectro-temporal tracker (median)     : 99.6 BPM
+ENSEMBLE = mean(selector, tracker)    : 99.6 BPM   <-- the number the app shows
+reference (finger oximeter)           : 98.3 BPM
+error of classical CHROM : 1.7 BPM
+error of ensemble        : 1.3 BPM
+
+HONEST NOTES
+- The ensemble models were trained on ALL 125 recorded sessions, which includes this video's session, so this single
+  result is optimistic ('in-sample'). The unbiased accuracy is the out-of-fold figure: about 3.9 BPM mean error on 125
+  recorded sessions / 75 people (classical 11.35, old hybrid 6.69 on the same sessions).
+- That is evidence on recorded video, not on a live webcam. See data/evolution/22-*.md and 23-*.md.
