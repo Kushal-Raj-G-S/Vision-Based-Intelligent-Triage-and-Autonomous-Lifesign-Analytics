@@ -256,6 +256,9 @@ class Camera:
         # means (as used, and before the debug outline is drawn) in `last_roi_parts`. Off = zero extra work.
         self.record_roi_parts = False
         self.last_roi_parts: Optional[dict] = None
+        # Proof-of-concept hook (core/poc_jobs.py): keep a copy of the last raw frame (taken BEFORE any overlay is drawn). Off = zero extra work.
+        self.capture_clean_frame = False
+        self.last_clean_frame = None
 
         # Landmark-based motion tracking (MediaPipe mode)
         self._prev_cx: Optional[float] = None
@@ -440,6 +443,8 @@ class Camera:
             log.error("Error reading frame: %s", exc)
             return None, None, False, 0.0
 
+        if self.capture_clean_frame:
+            self.last_clean_frame = frame.copy()
         clean = None if (annotate and not pulse) else frame.copy()
 
         if self.use_mediapipe:

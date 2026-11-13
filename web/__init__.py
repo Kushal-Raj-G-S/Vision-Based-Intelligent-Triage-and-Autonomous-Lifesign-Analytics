@@ -243,6 +243,12 @@ class SessionState:
     live_resampler: object = None
     last_dsp: object = None
 
+    # Proof-of-concept folders (core/poc_jobs.py): who the patient is, the live recorder, the uploaded file to analyse after playback
+    patient_name: str = ""
+    poc_recorder: object = None
+    poc_video_path: object = None
+    poc_submitted: bool = False
+
     # Persisted "last good" autonomic values (survive momentary signal loss)
     last_valid_hrv: float = 0.0
     last_valid_stress: float = 0.0
@@ -268,6 +274,9 @@ class SessionState:
             self.hr_ensemble = None
         self.live_resampler = None
         self.last_dsp = None
+        self.poc_recorder = None
+        self.poc_video_path = None
+        self.poc_submitted = False
         self.last_valid_hrv = 0.0
         self.last_valid_stress = 0.0
         self.last_compiled_report = None

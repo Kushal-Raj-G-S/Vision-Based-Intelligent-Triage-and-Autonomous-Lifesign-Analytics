@@ -527,7 +527,7 @@ export default function Home() {
       const res = await fetch(`${BACKEND_URL}/start_webcam`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: selectedCamera })
+        body: JSON.stringify({ source: selectedCamera, patient_name: patientName })
       });
       const data = await res.json();
       if (data.success) {
@@ -553,7 +553,7 @@ export default function Home() {
       const res = await fetch(`${BACKEND_URL}/api/start_uploaded_video`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: selectedUploadedVideo })
+        body: JSON.stringify({ filename: selectedUploadedVideo, patient_name: patientName })
       });
       const data = await res.json();
       if (data.success) {

@@ -154,6 +154,19 @@ Full build story, measurements and the NOT-verified list: `data/evolution/20-voi
   coincident readings stay in `rr_history` forever. Unfixed on purpose (one counted session cannot validate a tuning). Claim respiration
   on recorded data only (BIDMC / CapnoBase / VitalDB), never on a live webcam.
 - `core/hr_ensemble.py` (Era 22) is wired into the app; `VITAL_HR_ENSEMBLE=0` disables it. `scripts/test_hr_ensemble.py` checks parity.
+- **Proof-of-concept folders (Era 24):** every finished upload / live session builds `poc/patients/<name>/<time>_<upload|live>/` (frames, R/G/B channel
+  frames + contribution graph, CHROM/POS pulse, Welch spectrum, ensemble) in a separate low-priority process (`core/poc_jobs.py` -> `core/poc_report.py`,
+  max 2 parallel, failures contained; `VITAL_POC=0` disables; `poc/patients/` is git-ignored — it holds face images). Heart rate only. The live recorder
+  (`LiveTraceRecorder`, camera hooks `record_roi_parts` / `capture_clean_frame`) was tested with a file standing in for a camera, NOT yet on the real webcam.
+  Plain conclusions (`core/poc_conclusions.py`) are built from the measured numbers only, never an LLM — deliberately, see Era 8's 6.2% figure above.
+- **AI-polished wording for those conclusions (Era 26), guarded by real NeMo Guardrails — read `data/evolution/26-poc-llm-polish.md` first.**
+  Runs in an ISOLATED venv (`tools/poc_llm/venv` — nemoguardrails/langchain live ONLY there, never in the main app venv, to avoid colliding with CrewAI's
+  own pins), own API key (`NVIDIA_API_KEY_POC`), own self-healing pool (`core/poc_llm_pool.py` — model choices tested, not assumed: most of the account's
+  85 listed models 404, several reasoning models burn their budget on hidden `reasoning_content` and return empty — the SAME failure already live in
+  `agents/llm_pool.py`'s narrative step; `nemotron-3.5-lightning` needs `chat_template_kwargs:{"thinking":false}`, a fix proven here but NOT yet applied to
+  the triage crew's own pool). A SECOND, independent model call (`self_check_facts`, called directly, not through Colang) must confirm every number in the
+  polished paragraph still matches the facts before it is shown; on any failure/timeout/disabled, the plain deterministic conclusion stands unchanged —
+  this can never make a report worse, only sometimes skip the nicer wording. `VITAL_POC_LLM=0` disables; needs `tools/poc_llm/venv` to exist.
 
 ## A note on trusting changes in this repo
 

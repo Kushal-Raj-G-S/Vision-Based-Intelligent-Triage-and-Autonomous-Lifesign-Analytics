@@ -181,6 +181,62 @@ def _start_live_resampler(live: bool) -> None:
     web.session.last_dsp = None
 
 
+def _poc_clean_name(v) -> str:
+    return str(v or '').strip()[:80]
+
+
+def _poc_finish_live() -> None:
+    """Close a live proof-of-concept recording (if any) and queue its report. Never raises."""
+    rec = web.session.poc_recorder
+    web.session.poc_recorder = None
+    if rec is not None:
+        try:
+            rec.finish()
+        except Exception:
+            pass
+
+
+def _poc_begin(source, live: bool) -> None:
+    """A new session starts: close any open live recording, then (live only) start recording this one. Never raises."""
+    try:
+        _poc_finish_live()
+        web.session.poc_submitted = False
+        web.session.poc_video_path = None if live else str(source)
+        from core import poc_jobs
+        if live and poc_jobs.enabled():
+            web.session.poc_recorder = poc_jobs.LiveTraceRecorder(web.session.patient_name or 'Unnamed')
+            web.camera.record_roi_parts = True
+            web.camera.capture_clean_frame = True
+    except Exception:
+        web.session.poc_recorder = None
+
+
+def _poc_record(roi_data, motion_delta) -> None:
+    rec = web.session.poc_recorder
+    if rec is None or roi_data is None:
+        return
+    try:
+        p = (getattr(web.camera, 'last_roi_parts', None) or {}).get('prod')
+        parts = [p[k][2 - c] for k in range(3) for c in range(3)] if p else None
+        rec.add(time.perf_counter(), roi_data, motion_delta, parts,
+                getattr(web.camera, 'last_clean_frame', None), getattr(web.camera, 'last_face_box', None))
+    except Exception:
+        pass
+
+
+def _poc_submit_upload() -> None:
+    """An uploaded video reached its end: queue its proof folder (once). Never raises."""
+    if web.session.poc_submitted or web.session.is_live_camera or not web.session.poc_video_path:
+        return
+    web.session.poc_submitted = True
+    try:
+        from core import poc_jobs
+        stem = os.path.splitext(os.path.basename(web.session.poc_video_path))[0]
+        poc_jobs.submit_video(web.session.poc_video_path, web.session.patient_name or stem)
+    except Exception:
+        pass
+
+
 def _run_dsp(roi_data, motion_delta, elapsed):
     """Feed one camera frame to the DSP and return the latest process_ppg_signal() dict.
 
@@ -243,6 +299,7 @@ def generate_frames(clean: bool = False, pulse: bool = False):
                 web.session.metrics['status']       = 'VIDEO_ENDED'
                 web.session.metrics['classification'] = _classify(final.get('final_bpm'))
                 web.session.metrics['calibration_done'] = calibration_done
+                _poc_submit_upload()
                 if not web.session.is_live_camera:
                     web.camera.release_video()
             break
@@ -292,6 +349,7 @@ def generate_frames(clean: bool = False, pulse: bool = False):
                 warnings.append("Poor lighting — move to better light")
 
             results = _run_dsp(roi_data, motion_delta, elapsed)
+            _poc_record(roi_data, motion_delta)
 
             if results.get('_stale'):
                 pass                      # no new uniform-grid sample this frame: keep the previous reading, add nothing
@@ -570,6 +628,7 @@ def _reset(source, live):
         web.rppg_engine = AdvancedRPPG(fps=int(round(source_fps)), window_size=max(300, int(source_fps * 10)))
         _start_hr_ensemble(source_fps)
         _start_live_resampler(live)
+        _poc_begin(source, live)
         web.session.frame_count    = 0
         web.session.start_time     = time.time()
         web.session.is_live_camera = live
@@ -589,6 +648,7 @@ def _reset(source, live):
 
 
 def _release_session():
+    _poc_finish_live()
     """End active capture and return camera to standby without destroying detectors."""
     web.session.is_live_camera = False
     web.session.stop_event.set()
@@ -718,6 +778,7 @@ def start_uploaded_video():
     if not os.path.isfile(filepath):
         return jsonify({'success': False, 'error': f'No uploaded video named "{filename}" found.'}), 404
 
+    web.session.patient_name = _poc_clean_name(data.get('patient_name'))
     _reset(filepath, live=False)
     return jsonify({'success': True, 'message': f'Playing: {filename}'})
 
@@ -745,6 +806,7 @@ def start_webcam():
                 'success': False,
                 'error': 'No camera detected. Connect a webcam and ensure it is not in use by another app.',
             }), 400
+        web.session.patient_name = _poc_clean_name(payload.get('patient_name'))
         _reset(source, live=True)
         if web.camera.dummy_mode:
             return jsonify({
